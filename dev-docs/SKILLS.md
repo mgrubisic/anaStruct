@@ -108,9 +108,11 @@ See `examples/ex_29_thermal_loadcombination.py`.
 - Positive gradient = warmer face on the left when looking from node 1 to
   node 2 (the upper face for non-vertical elements; for vertical elements it
   depends on the entry order).
-- Thermal fixed-end forces use the element stiffness matrix, which is only
-  approximate for element end hinges/springs (`spring=`), as it is for
-  mechanical loads; hinged supports are exact.
+- End hinges and rotational springs (`spring={node: k}`, `add_internal_hinge`)
+  are handled exactly for all loads: the element stiffness is condensed
+  (hinge: 3EI/l instead of 4EI/l; spring: flexibilities in series, see
+  `anastruct/fem/elements.py::constitutive_matrix` and the "End releases"
+  section in `docs/source/elements.rst`).
 - No plotting support for either feature yet (plots of loads don't show them;
   result plots like `show_bending_moment()` are correct).
 - Element result curves `deflection`/`extension` (relative to the element

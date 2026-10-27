@@ -127,8 +127,7 @@ def apply_perpendicular_q_load(system: "SystemElements") -> None:
         if q_perpendicular == 0 and qi_perpendicular == 0:
             continue
 
-        kl = element.constitutive_matrix[1][1] * 1e6
-        kr = element.constitutive_matrix[2][2] * 1e6
+        kl, kr = element.end_rotational_stiffness
 
         # minus because of systems positive rotation
         left_moment = det_moment(

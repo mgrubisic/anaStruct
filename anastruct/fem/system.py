@@ -379,7 +379,10 @@ class SystemElements:
             mp (Optional[MpType], optional): Maximum plastic moment of each end node. Keys are integers representing
                 the nodes. Values are the bending moment capacity. Defaults to None.
             spring (Optional[Spring], optional): Rotational spring or hinge (k=0) of each end node.
-                Keys are integers representing the nodes. Values are the bending moment capacity. Defaults to None.
+                Keys are integers representing the nodes (1 or 2). Values are the rotational spring
+                stiffness k (moment per radian). k=0 is a hinge, a large k approaches a rigid connection.
+                The element stiffness is condensed exactly, see :ref:`End releases <end-releases>`.
+                Defaults to None.
 
         Optional Keyword Args:
             element_type (ElementType): "general" (axial and lateral force) or "truss" (axial force only)
@@ -1511,10 +1514,9 @@ class SystemElements:
             `deflection` and `extension` (relative to the element chord) do not
             include the free thermal curvature and strain; nodal displacements,
             reactions and the internal force diagrams are exact.
-            The equivalent nodal forces use the stiffness matrix of the element, so
-            for elements with an end hinge or spring (`spring=`) they are only as
-            accurate as that matrix; a hinged support (`add_support_hinged()`) is
-            handled exactly.
+            The equivalent nodal forces are derived with the (condensed) stiffness
+            matrix of the element, so end hinges and rotational springs
+            (`spring=`) and internal hinges are accounted for exactly.
         """
         n_elems = len(element_id) if isinstance(element_id, Sequence) else 1
         element_id = arg_to_list(element_id, n_elems)

@@ -93,6 +93,41 @@ add_truss_element
 .. automethod:: anastruct.fem.system.SystemElements.add_truss_element
 
 
+.. _end-releases:
+
+End releases: hinges and rotational springs
+-------------------------------------------
+
+The ends of a standard element can be released with the :code:`spring` argument of :code:`add_element`,
+:code:`add_multiple_elements` and :code:`add_element_grid`. The keys are the element nodes (1 and 2), the values the
+rotational stiffness :code:`k` of the connection (moment per radian).
+
+* :code:`k = 0` is a hinge. The end carries no bending moment. An element with one hinge has the rotational stiffness
+  :math:`3EI/l` instead of :math:`4EI/l`; the rotation of the hinge is eliminated by static condensation.
+* :code:`k > 0` is a rotational spring in series with the element: the flexibilities add,
+  :math:`C = C_{element} + \mathrm{diag}(1/k_1, 1/k_2)`. A very large :code:`k` approaches a rigid connection.
+* An internal hinge (:code:`add_internal_hinge`) releases all the elements that meet in the node in the same way.
+
+.. code-block:: python
+
+    ss = SystemElements(EA=1e9, EI=1e4)
+    # fixed at node 1, hinge at the end of the element: M = q * L**2 / 8
+    ss.add_element([[0, 0], [6, 0]], spring={2: 0})
+    ss.add_support_fixed(1)
+    ss.add_support_hinged(2)
+    ss.q_load(-10, 1)
+    ss.solve()
+
+    # end spring of 50 kNm/rad: tip deflection = P * L**3 / (3 * EI) + P * L**2 / k
+    ss = SystemElements(EA=1e9, EI=1e4)
+    ss.add_element([[0, 0], [4, 0]], spring={1: 50})
+    ss.add_support_fixed(1)
+    ss.point_load(2, Fy=-10)
+    ss.solve()
+
+Mechanical loads, thermal loads and imposed displacements all use the same condensed stiffness, so releases are exact
+for each of them.
+
 Discretization
 --------------
 

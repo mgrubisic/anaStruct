@@ -49,9 +49,10 @@ print(ss.reaction_forces[2].Fy)
 |---|---|
 | `anastruct/fem/system.py` | Storage (`loads_displacement`, `loads_temperature`, `_prescribed_displacements`), methods `imposed_displacement()` + `thermal_load()`, prescribed-DOF scatter in `solve()`, `validate()` accepts load-free settlement analyses |
 | `anastruct/fem/system_components/assembly.py` | `apply_temperature_load()` (registered in `prep_matrix_forces`), prescribed-DOF handling in `process_supports()`, `K_fr @ u_r` correction in `process_conditions()` |
-| `anastruct/fem/elements.py` | Element attribute `temperature_load`, summed in `Element.__add__` |
+| `anastruct/fem/elements.py` | Element attribute `temperature_load`, summed in `Element.__add__`; `constitutive_matrix()` rewritten: exact static condensation of hinges and rotational springs in series (fixes 4EI/l → 3EI/l and NaN for finite springs) |
 | `anastruct/fem/postprocess.py` | `reaction_forces()` keeps the (possibly imposed) support displacements instead of zeroing them |
 | `anastruct/fem/util/load.py` | `LoadCase.thermal_load()`, `LoadCase.imposed_displacement()` |
+| `tests/test_hinges_springs.py` | 12 tests: hinge/spring stiffness against analytical results, incl. thermal loads |
 | `tests/test_imposed_thermal.py` | 30 plain test functions, verified against analytical solutions (incl. load combinations, model edits, sign conventions) |
 | `examples/ex_27_imposed_displacement.py` | Settlement + imposed rotation |
 | `examples/ex_28_thermal_load.py` | Uniform dT + gradient, restrained and free |
@@ -60,7 +61,7 @@ print(ss.reaction_forces[2].Fy)
 ## Running tests
 
 ```bash
-python -m pytest                          # whole suite (241 tests)
+python -m pytest                          # whole suite (253 tests)
 python -m pytest tests/test_imposed_thermal.py -v   # new tests only
 ```
 

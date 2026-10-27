@@ -161,10 +161,34 @@ dodaci.
   `thermal_load`, tihi gubitak opterećenja u `discretize()`/`remove_loads()`,
   tihi no-op `imposed_displacement` nakon `solve()`, kosi valjkasti oslonac i
   rotacija na unutarnjem zglobu (sada `FEMException`).
-- **Poznato, naslijeđeno iz upstreama (nije mijenjano):** matrica krutosti
-  elementa s krajnjim zglobom/oprugom (`spring=`) daje 4EI/l umjesto 3EI/l, pa
-  su i toplinske ekvivalentne sile za takve elemente približne; `det_linear_buckling`
-  i `solve(geometrical_non_linear=True)` imaju neovisne probleme.
+- **Zglobovi i opruge (ispravljeno):** `constitutive_matrix` je u upstreamu za
+  zglob samo nulirao retke (4EI/l umjesto 3EI/l; npr. progib Gerberove grede
+  0,08 umjesto 0,1067), a za konačnu oprugu davao dijeljenje s nulom/NaN. Sada se
+  zglob eliminira statičkom kondenzacijom (Schurov komplement), a opruga se
+  dodaje u seriju preko fleksibilnosti: `C = C_el + diag(1/k1, 1/k2)`; zglob
+  ima prednost pred oprugom. Vrijedi za sva opterećenja i unutarnje zglobove.
+  Testovi: `tests/test_hinges_springs.py`.
+- **Fiksni krajnji momenti q-opterećenja:** `apply_perpendicular_q_load` je
+  `det_moment/det_shear` hranio s `constitutive_matrix[i][i] * 1e6`, što je
+  zanemarivalo konačne opruge (moment ostao kao kod upetog kraja). Sada se koristi
+  `Element.end_rotational_stiffness`: 0 za zglob, `k` za oprugu, `D*1e6` za kruti
+  kraj. Za plastificirane krajeve (`nodes_plastic`) vrijedi stara formula iz
+  trenutne (skalirane) matrice da iteracija konvergira prema `mp`; rešetkasti
+  elementi imaju (0, 0) (inače krivi posmici kod trapeznog opterećenja).
+- **Poznato, naslijeđeno iz upstreama (nije mijenjano):**
+  - `discretize()` prosljeđuje isti `spring` rječnik svim podelementima (zglob ili
+    opruga s jednog kraja ponavlja se na svim unutarnjim čvorovima), q-opterećenje
+    stavlja samo na podelement s originalnim ID-jem, a preslikavanje čvorova
+    `(id-1)*n+1` vrijedi samo za lanac elemenata. Zato `discretize()` (pa i
+    `solve(geometrical_non_linear=True, discretize_kwargs=...)`) nije pouzdan za
+    višečlane modele.
+  - `check_internal_hinges` ovisi o redoslijedu dodavanja elemenata (T-spoj:
+    stup treba dodati prije otpuštene grede).
+  - Geometrijski nelinearna matrica dodaje nekondenziranu geometrijsku krutost i
+    na otpuštenim krajevima; `det_linear_buckling` (`solver.py`) koristi
+    `np.linalg.inv(kg) * k0` (množenje po elementima, ne matrično), pa su
+    faktori izvijanja nevjerodostojni.
+  - `insert_node_old` i `add_element_grid` dijele `spring` rječnike.
 - Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
   zakrivljenost/istezanje (dokumentirano u docstringu).
 

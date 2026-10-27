@@ -36,6 +36,11 @@ ss.thermal_load(1, delta_t=20, alpha=1.2e-5,                     # uniform heati
 ss.solve()
 ```
 
+The fork also corrects the stiffness of **hinges and rotational springs** at element
+ends (`spring={node: k}`, internal hinges): a hinge is condensed exactly (an element with
+one hinge has 3EI/l instead of 4EI/l) and a finite spring `k` acts in series with the
+element, instead of giving wrong values or NaN. See `docs/source/elements.rst`.
+
 See `dev-docs/` for full documentation (usage recipes in `dev-docs/SKILLS.md`) and
 `examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,
 `examples/ex_29_thermal_loadcombination.py` for runnable examples.

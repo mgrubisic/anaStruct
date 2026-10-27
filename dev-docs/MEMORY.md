@@ -12,7 +12,7 @@
 - `LoadCase.thermal_load(...)`, `LoadCase.imposed_displacement(...)` — integracija s LoadCase/LoadCombination
   (faktori kombinacija rade, provjereno).
 - 30 testova u `tests/test_imposed_thermal.py` — analitički verificirani;
-  cijeli suite: **241 passed**. VAŽNO: testovi su obične `test_*` funkcije;
+  cijeli suite: **253 passed** (uklj. `tests/test_hinges_springs.py`). VAŽNO: testovi su obične `test_*` funkcije;
   ugniježđeni `describe_/context_/it_` blokovi se u ovom okruženju ne izvršavaju
   (vidi SPOZNAJE.md).
 - `mypy anastruct` — bez novih grešaka (1 preostala je naslijeđena u
@@ -33,6 +33,9 @@
    `insert_node()` i Sphinx docs (nadopunjeno nakon reviewa); plotter nije uključen.
 4. Predznaci prate postojeće load-konvencije (`uy * orientation_cs`), ne
    izlazne gettere — vidi SPOZNAJE.md.
+
+- Zglobovi/opruge elemenata (`spring=`, unutarnji zglobovi): ispravljena
+  matrica krutosti (kondenzacija), vidi SPOZNAJE.md.
 
 ## Otvoreno / mogući sljedeći koraci
 
