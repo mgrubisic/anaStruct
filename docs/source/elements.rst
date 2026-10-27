@@ -106,7 +106,12 @@ rotational stiffness :code:`k` of the connection (moment per radian).
   :math:`3EI/l` instead of :math:`4EI/l`; the rotation of the hinge is eliminated by static condensation.
 * :code:`k > 0` is a rotational spring in series with the element: the flexibilities add,
   :math:`C = C_{element} + \mathrm{diag}(1/k_1, 1/k_2)`. A very large :code:`k` approaches a rigid connection.
-* An internal hinge (:code:`add_internal_hinge`) releases all the elements that meet in the node in the same way.
+* A node is an internal hinge when it is declared with :code:`add_internal_hinge`, or when every element that meets in
+  the node has a hinge there (:code:`{1: 0}` or :code:`{2: 0}`). All the elements are then released at the node. If one
+  or more elements are rigidly connected, they share the rotation of the node, which is solved like any other degree of
+  freedom (a moment load or a rotational support at the node is carried by the rigid elements); only the elements with
+  a hinge are released, through their own springs. The result does not depend on the order in which the elements were
+  added, and the :code:`spring` dictionaries given by the user are never modified.
 
 .. code-block:: python
 
@@ -131,7 +136,11 @@ for each of them.
 Discretization
 --------------
 
-You can discretize an element in multiple smaller elements with the discretize method.
+You can discretize an element in multiple smaller elements with the discretize method. The supports, loads, imposed
+displacements and internal hinges are carried over. Hinges, rotational springs and plastic moments stay at the ends of
+the original element. Truss elements are not divided, because the nodes between collinear truss elements would be
+mechanisms. Note that the ids of the nodes and elements of the new mesh differ from the original ones; use
+:code:`find_node_id` to find a node by its location.
 
 .. automethod:: anastruct.fem.system.SystemElements.discretize
 

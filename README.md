@@ -39,7 +39,8 @@ ss.solve()
 The fork also corrects the stiffness of **hinges and rotational springs** at element
 ends (`spring={node: k}`, internal hinges): a hinge is condensed exactly (an element with
 one hinge has 3EI/l instead of 4EI/l) and a finite spring `k` acts in series with the
-element, instead of giving wrong values or NaN. See `docs/source/elements.rst`.
+element, instead of giving wrong values or NaN. See `docs/source/elements.rst`. `discretize()` and the detection of internal hinges
+(independent of the order in which the elements are added) were reworked as well.
 
 See `dev-docs/` for full documentation (usage recipes in `dev-docs/SKILLS.md`) and
 `examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,

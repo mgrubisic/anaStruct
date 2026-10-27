@@ -32,6 +32,10 @@ class SystemLevel:
         Results place in SystemElements class: self.system.node_map (list)
         """
         for k, v in self.system.node_element_map.items():
+            # the node objects are replaced below; keep what is not a result
+            elements = self.system.node_map[k].elements
+            hinge = self.system.node_map[k].hinge
+
             # reset nodes in case of iterative calculation
             self.system.node_map[k].reset()
 
@@ -55,6 +59,9 @@ class SystemLevel:
                 self.system.node_map[k].ux = -node.ux
                 self.system.node_map[k].uy = -node.uy
                 self.system.node_map[k].phi_z = -node.phi_z
+
+            self.system.node_map[k].elements = elements
+            self.system.node_map[k].hinge = hinge
 
     def reaction_forces(self) -> None:
         """Determines the reaction forces on the system level.

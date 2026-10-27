@@ -425,7 +425,9 @@ def process_supports(system: "SystemElements") -> None:
                 "Invalid parameters",
                 f"Imposed displacements on inclined roller support {node_id} are not supported.",
             )
-        if phi_z is not None and system.node_map[node_id] in system.internal_hinges:
+        if phi_z is not None and any(
+            hinge.id == node_id for hinge in system.internal_hinges
+        ):
             raise FEMException(
                 "Invalid parameters",
                 f"A rotation cannot be imposed on internal hinge {node_id}.",

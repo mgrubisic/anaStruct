@@ -175,15 +175,38 @@ dodaci.
   kraj. Za plastificirane krajeve (`nodes_plastic`) vrijedi stara formula iz
   trenutne (skalirane) matrice da iteracija konvergira prema `mp`; rešetkasti
   elementi imaju (0, 0) (inače krivi posmici kod trapeznog opterećenja).
+- **`discretize()` (ispravljeno):** upstream je pretpostavljao lanac elemenata
+  (`(id-1)*n+1` za čvorove, q-opterećenje samo na podelement s originalnim ID-jem,
+  isti `spring` rječnik na svim podelementima, kosi valjkasti oslonci i eksplicitni
+  unutarnji zglobovi su se gubili, rešetkasti elementi postajali opći). Sada se
+  grade eksplicitne mape stari→novi ID čvorova/elemenata; opruge, zglobovi i `mp`
+  idu samo na vanjske podelemente; q-opterećenje (i trapezno, i vlastita težina) se
+  linearno interpolira; kosi oslonci, opružni oslonci, eksplicitni zglobovi,
+  toplinska opterećenja i zadani pomaci se prenose; plotter ostaje vezan na sustav.
+  ID-jevi čvorova i elemenata u novoj mreži su drukčiji (koristiti `find_node_id`).
+  Rešetkasti elementi se ne dijele (čvorovi između kolinearnih štapova bili bi
+  mehanizmi); plotter se kopira da `solve(geometrical_non_linear=True)` ne
+  preusmjeri plotter korisnikova sustava na kopiju.
+- **Ostalo (ispravljeno u istom koraku):** `add_support_spring` razrješava negativne
+  ID-jeve čvorova odmah; `support_check` se za oprugu zove samo za rotaciju
+  (translation=3); `node_results_system` čuva `node.elements` i `node.hinge` kad
+  zamjenjuje objekte čvorova (inače `remove_element`/`insert_node` nakon `solve()`
+  bacaju KeyError i zglobovi nestaju nakon drugog `solve()`).
+- **`check_internal_hinges` (ispravljeno):** status čvora se svaki put računa iz
+  korisnikovih opruga (koje se više ne mijenjaju) i ne ovisi o redoslijedu
+  dodavanja elemenata (T-spoj: stup prije ili poslije otpuštene grede daje isti
+  rezultat). Čvor je zglob (kondenzira se, rotacija
+  ograničena) ako je deklariran (`add_internal_hinge`, `_explicit_internal_hinges`)
+  ili ako su SVI spojeni elementi otpušteni. Jedan kruti element + otpušteni
+  elementi: čvor se rješava vlastitom rotacijom (moment-opterećenje i rotacijski
+  oslonac u čvoru rade; staro pravilo "najviše jedan kruti" ih je tiho gubilo);
+  plotter i dalje crta simbol zgloba na svakom otpuštenom kraju. Elementi u
+  `add_element` kopiraju `spring`/`mp` rječnike, `remove_element` ponovno provjerava
+  preostale čvorove; `Element.springs`/`Element.hinges` više ne dobivaju
+  `{1:0}`/`{2:0}` na zglobnim čvorovima (stanje je u `node.hinge`/`internal_hinges`). Čvorovi u `internal_hinges` se uspoređuju po ID-ju jer
+  postprocesiranje zamjenjuje objekte u `node_map` (i briše `node.hinge`, koji
+  `solve()` svaki put ponovno postavlja).
 - **Poznato, naslijeđeno iz upstreama (nije mijenjano):**
-  - `discretize()` prosljeđuje isti `spring` rječnik svim podelementima (zglob ili
-    opruga s jednog kraja ponavlja se na svim unutarnjim čvorovima), q-opterećenje
-    stavlja samo na podelement s originalnim ID-jem, a preslikavanje čvorova
-    `(id-1)*n+1` vrijedi samo za lanac elemenata. Zato `discretize()` (pa i
-    `solve(geometrical_non_linear=True, discretize_kwargs=...)`) nije pouzdan za
-    višečlane modele.
-  - `check_internal_hinges` ovisi o redoslijedu dodavanja elemenata (T-spoj:
-    stup treba dodati prije otpuštene grede).
   - Geometrijski nelinearna matrica dodaje nekondenziranu geometrijsku krutost i
     na otpuštenim krajevima; `det_linear_buckling` (`solver.py`) koristi
     `np.linalg.inv(kg) * k0` (množenje po elementima, ne matrično), pa su

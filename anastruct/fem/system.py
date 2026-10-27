@@ -128,6 +128,9 @@ class SystemElements:
         self.supports_hinged: List[Node] = []
         self.supports_rotational: List[Node] = []
         self.internal_hinges: List[Node] = []
+        # node ids declared with add_internal_hinge (internal_hinges also holds the
+        # nodes where the elements are released by their springs)
+        self._explicit_internal_hinges: Set[int] = set()
         self.supports_roll: List[Node] = []
         self.supports_spring_x: List[Tuple[Node, bool]] = []
         self.supports_spring_y: List[Tuple[Node, bool]] = []
@@ -399,10 +402,9 @@ class SystemElements:
             int: ID of the new element
         """
 
-        if mp is None:
-            mp = {}
-        if spring is None:
-            spring = {}
+        # copy the dictionaries, so that elements never share (and modify) one object
+        mp = {} if mp is None else dict(mp)
+        spring = {} if spring is None else dict(spring)
 
         element_type = kwargs.get("element_type", "general")
 
@@ -506,6 +508,9 @@ class SystemElements:
             # Check if node is now orphaned, and remove it and its loads if so
             if len(self.node_map[node_id].elements) == 0:
                 system_components.util.remove_node_id(self, node_id)
+            else:
+                # the remaining elements may (no longer) form an internal hinge
+                system_components.util.check_internal_hinges(self, node_id)
 
         # Remove element_id
         self.element_map.pop(element_id)
@@ -1078,8 +1083,9 @@ class SystemElements:
 
     def add_internal_hinge(self, node_id: Union[int, Sequence[int]]) -> None:
         """Model a internal hinge at a given node.
-        This may alternatively be done by setting a spring restraint to zero (`{1: 0}` or `{2: 0}`).
-        The effect is the same, though this function may be easier to use.
+        This releases all the elements that meet in the node, also the rigidly connected ones. A node
+        where every element has a spring restraint of zero (`{1: 0}` or `{2: 0}`) is a hinge as well; if
+        some elements are rigidly connected, only the elements with a spring of zero are released.
 
         Args:
             node_id (Union[int, Sequence[int]]): Represents the nodes ID
@@ -1090,8 +1096,9 @@ class SystemElements:
         for id_ in node_id:
             id_ = _negative_index_to_id(id_, self.node_map.keys())
 
-            # add the support to the support list for the plotter
-            self.internal_hinges.append(self.node_map[id_])
+            # the node is a hinge from now on, also when no element is released
+            self._explicit_internal_hinges.add(id_)
+            system_components.util.check_internal_hinges(self, id_)
 
     def add_support_roll(
         self,
@@ -1185,7 +1192,16 @@ class SystemElements:
             roll (Union[Sequence[bool], bool], optional): If set to True, only the translation of the
                 spring is controlled. Defaults to False.
         """
-        self.supports_spring_args.append((node_id, translation, k, roll))
+        # resolve negative node ids now, the node they refer to must not change when
+        # nodes are added later (the arguments are also used to copy the supports)
+        resolved_node_id: Union[Sequence[int], int]
+        if isinstance(node_id, collections.abc.Iterable):
+            resolved_node_id = [
+                _negative_index_to_id(i, self.node_map.keys()) for i in node_id
+            ]
+        else:
+            resolved_node_id = _negative_index_to_id(node_id, self.node_map.keys())
+        self.supports_spring_args.append((resolved_node_id, translation, k, roll))
         # The stiffness of the spring is added in the system matrix at the location that
         # represents the node and the displacement.
         if not isinstance(node_id, collections.abc.Iterable):
@@ -1201,7 +1217,9 @@ class SystemElements:
 
         for id_, translation_, k_, roll_ in zip(node_id, translation, k, roll):
             id_ = _negative_index_to_id(id_, self.node_map.keys())
-            system_components.util.support_check(self, id_)
+            if translation_ == 3:
+                # only a spring that restrains the rotation conflicts with a hinge
+                system_components.util.support_check(self, id_)
 
             # determine the location in the system matrix
             # row and column are the same
@@ -1449,7 +1467,7 @@ class SystemElements:
                 "Invalid parameters",
                 "Imposed displacements on inclined roller supports are not supported.",
             )
-        if phi_z is not None and self.node_map[id_] in self.internal_hinges:
+        if phi_z is not None and any(hinge.id == id_ for hinge in self.internal_hinges):
             raise FEMException(
                 "Invalid parameters",
                 "A rotation cannot be imposed on an internal hinge.",
@@ -2400,77 +2418,161 @@ class SystemElements:
         """Discretize the elements. Takes an already defined :class:`.SystemElements` object and increases the number
         of elements.
 
+        Every element is divided into n sub-elements. The supports, the loads (point loads, moment loads,
+        q-loads, self-weights, thermal loads), the imposed displacements and the internal hinges are carried over
+        to the new mesh. Rotational springs, hinges (`spring=`) and plastic moments (`mp=`) belong to the ends of
+        the original element, so only the outer sub-elements get them. Truss elements stay truss elements and are
+        not divided: they have no bending stiffness, so the nodes between collinear truss elements would be
+        mechanisms.
+
         Args:
             n (int, optional): Divide the elements into n sub-elements.. Defaults to 10.
         """
+        # copies, so that a (shallow) copy of this system that shares the plotter with
+        # it keeps its own plotter
+        old_plotter = copy.copy(self.plotter)
+        old_plot_values = copy.copy(self.plot_values)
         ss = SystemElements(
-            EA=self.EA, EI=self.EI, load_factor=self.load_factor, mesh=self.plotter.mesh
+            EA=self.EA,
+            EI=self.EI,
+            load_factor=self.load_factor,
+            mesh=self.plotter.mesh,
+            figsize=self.figsize,
+            invert_y_loads=self.orientation_cs == -1,
         )
 
+        # elements: old element id -> ids of its sub-elements
+        sub_elements: Dict[int, List[int]] = {}
         for element in self.element_map.values():
-            g = self.element_map[element.id].dead_load
-            mp = (
-                self.non_linear_elements[element.id]
-                if element.id in self.non_linear_elements
-                else {}
-            )
+            springs = element.springs or {}
+            mp = self.non_linear_elements.get(element.id, {})
 
-            el_v_range = vertex_range(element.vertex_1, element.vertex_2, n)
-            for last_v, v in zip(el_v_range, el_v_range[1:]):
-                loc = [last_v, v]
-                ss.add_element(
-                    loc,
+            # a truss element is not divided: it has no bending stiffness, so the
+            # nodes between two collinear truss elements would be mechanisms
+            parts = 1 if element.type == "truss" else n
+            # the ends of the original element, with the sub-element they belong to
+            ends: Tuple[Tuple[Literal[1, 2], int], ...] = ((1, 0), (2, parts - 1))
+
+            vertices = vertex_range(element.vertex_1, element.vertex_2, parts)
+            vertices[0], vertices[-1] = element.vertex_1, element.vertex_2
+            sub_elements[element.id] = []
+            for i, (vertex_1, vertex_2) in enumerate(zip(vertices, vertices[1:])):
+                sub_spring: "Spring" = {}
+                sub_mp: "MpType" = {}
+                for end, position in ends:
+                    if i == position:
+                        if end in springs:
+                            sub_spring[end] = springs[end]
+                        if end in mp:
+                            sub_mp[end] = mp[end]
+                sub_id = ss.add_element(
+                    [vertex_1, vertex_2],
                     EA=element.EA,
                     EI=element.EI,
-                    g=g,
-                    mp=mp,
-                    spring=element.springs,
+                    g=element.dead_load,
+                    mp=sub_mp,
+                    spring=sub_spring,
+                    element_type=element.type,
                 )
-                last_v = v
+                ss.element_map[sub_id].section_name = element.section_name
+                sub_elements[element.id].append(sub_id)
+
+        # nodes: old node id -> id of the node at the same location
+        node_ids: Dict[int, int] = {}
+        for node_id, node in self.node_map.items():
+            new_id = ss._vertices.get(node.vertex)
+            if new_id is None:
+                new_id = ss.find_node_id(node.vertex)
+            assert new_id is not None
+            node_ids[node_id] = new_id
 
         # supports
         for node, direction, rotate in zip(
             self.supports_roll, self.supports_roll_direction, self.supports_roll_rotate
         ):
-            ss.add_support_roll((node.id - 1) * n + 1, direction, None, rotate)
+            angle = (
+                -float(np.degrees(self.inclined_roll[node.id]))
+                if node.id in self.inclined_roll
+                else None
+            )
+            ss.add_support_roll(node_ids[node.id], direction, angle, rotate)
         for node in self.supports_fixed:
-            ss.add_support_fixed((node.id - 1) * n + 1)
+            ss.add_support_fixed(node_ids[node.id])
         for node in self.supports_hinged:
-            ss.add_support_hinged((node.id - 1) * n + 1)
+            ss.add_support_hinged(node_ids[node.id])
         for node in self.supports_rotational:
-            ss.add_support_rotational((node.id - 1) * n + 1)
+            ss.add_support_rotational(node_ids[node.id])
         for args in self.supports_spring_args:
-            ss.add_support_spring((args[0] - 1) * n + 1, *args[1:])
+            spring_nodes = args[0]
+            if isinstance(spring_nodes, collections.abc.Iterable):
+                new_nodes: Union[int, List[int]] = [
+                    node_ids[_negative_index_to_id(i, self.node_map.keys())]
+                    for i in spring_nodes
+                ]
+            else:
+                new_nodes = node_ids[
+                    _negative_index_to_id(spring_nodes, self.node_map.keys())
+                ]
+            ss.add_support_spring(new_nodes, *args[1:])
+        for node_id in self._explicit_internal_hinges:
+            ss.add_internal_hinge(node_ids[node_id])
 
-        # loads
-        for node_id, forces in self.loads_point.items():
-            ss.point_load(
-                (node_id - 1) * n + 1,
-                Fx=forces[0] / self.load_factor,
-                Fy=forces[1] / self.orientation_cs / self.load_factor,
-            )
+        # loads: the stored values already contain the load factor and the orientation
+        for node_id, force in self.loads_point.items():
+            ss.loads_point[node_ids[node_id]] = force
+        for node_id, moment in self.loads_moment.items():
+            ss.loads_moment[node_ids[node_id]] = moment
 
-        for node_id, forces_moment in self.loads_moment.items():
-            ss.moment_load((node_id - 1) * n + 1, forces_moment / self.load_factor)
+        def interpolate(start: float, end: float, fraction: float) -> float:
+            return start + (end - start) * fraction
+
+        # the q-loads vary linearly over the original element
         for element_id, forces_q in self.loads_q.items():
-            ss.q_load(
-                q=[i[1] / self.orientation_cs / self.load_factor for i in forces_q],
-                element_id=element_id,
-                direction="y",
-                q_perp=[i[0] / self.load_factor for i in forces_q],
-            )
+            element = self.element_map[element_id]
+            for i, sub_id in enumerate(sub_elements[element_id]):
+                parts = len(sub_elements[element_id])
+                fractions = (i / parts, (i + 1) / parts)
+                ss.loads_q[sub_id] = [
+                    (
+                        interpolate(forces_q[0][0], forces_q[1][0], fraction),
+                        interpolate(forces_q[0][1], forces_q[1][1], fraction),
+                    )
+                    for fraction in fractions
+                ]
+                sub_element = ss.element_map[sub_id]
+                sub_element.q_load = (
+                    interpolate(element.q_load[0], element.q_load[1], fractions[0]),
+                    interpolate(element.q_load[0], element.q_load[1], fractions[1]),
+                )
+                sub_element.q_perp_load = (
+                    interpolate(
+                        element.q_perp_load[0], element.q_perp_load[1], fractions[0]
+                    ),
+                    interpolate(
+                        element.q_perp_load[0], element.q_perp_load[1], fractions[1]
+                    ),
+                )
+                sub_element.q_direction = element.q_direction
+                sub_element.q_angle = element.q_angle
 
         # the thermal load (free strain and curvature) is uniform over the element
         for element_id, temperature_load in self.loads_temperature.items():
-            for sub_element_id in range((element_id - 1) * n + 1, element_id * n + 1):
-                ss.loads_temperature[sub_element_id] = temperature_load
-                ss.element_map[sub_element_id].temperature_load = temperature_load
+            for sub_id in sub_elements[element_id]:
+                ss.loads_temperature[sub_id] = temperature_load
+                ss.element_map[sub_id].temperature_load = temperature_load
 
         # imposed displacements are stored with the load factor and orientation applied
         for node_id, displacement in self.loads_displacement.items():
-            ss.loads_displacement[(node_id - 1) * n + 1] = displacement
+            ss.loads_displacement[node_ids[node_id]] = displacement
 
         self.__dict__ = ss.__dict__.copy()
+
+        # keep the plotter (with its scaling of the loads) and point the helper
+        # objects, which were created for `ss`, at this system
+        self.plotter, self.plot_values = old_plotter, old_plot_values
+        self.plotter.system = self
+        self.plot_values.system = self
+        self.post_processor = post_sl(self)
 
     def remove_loads(self, dead_load: bool = False) -> None:
         """Remove all the applied loads from the structure.
