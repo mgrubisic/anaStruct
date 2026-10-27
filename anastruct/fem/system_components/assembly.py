@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, List, Tuple
 
 import numpy as np
 
+from anastruct.basic import FEMException
 from anastruct.fem.elements import det_axial, det_moment, det_shear
 
 if TYPE_CHECKING:
@@ -44,6 +45,47 @@ def prep_matrix_forces(system: "SystemElements") -> None:
     apply_parallel_qn_load(system)
     apply_point_load(system)
     apply_moment_load(system)
+    apply_temperature_load(system)
+
+
+def apply_temperature_load(system: "SystemElements") -> None:
+    """Apply a temperature load to the system
+
+    The equivalent nodal forces are derived from the free thermal eigen strains of
+    the element: e0 = [alpha * delta_t * l, kappa * l / 2, kappa * l / 2], with
+    kappa = alpha * delta_t_gradient / h the free thermal curvature. The fixed-end
+    forces are obtained with the element's own kinematic and constitutive matrices,
+    so (internal) hinges and springs at the element ends are accounted for
+    automatically.
+
+    Args:
+        system (SystemElements): System to which the temperature load is applied
+    """
+    for element_id, (strain, curvature) in system.loads_temperature.items():
+        element = system.element_map[element_id]
+        if strain == 0 and curvature == 0:
+            continue
+
+        e0 = np.array(
+            [strain * element.l, curvature * element.l / 2, curvature * element.l / 2]
+        )
+        if element.type == "truss":
+            e0[1] = e0[2] = 0.0
+
+        primary_force = (
+            element.kinematic_matrix.T @ element.constitutive_matrix @ e0
+        )
+
+        element.element_primary_force_vector -= primary_force
+
+        # Set force vector
+        assert system.system_force_vector is not None
+        system.system_force_vector[
+            (element.node_id1 - 1) * 3 : (element.node_id1 - 1) * 3 + 3
+        ] += primary_force[0:3]
+        system.system_force_vector[
+            (element.node_id2 - 1) * 3 : (element.node_id2 - 1) * 3 + 3
+        ] += primary_force[3:]
 
 
 def apply_moment_load(system: "SystemElements") -> None:
@@ -289,7 +331,10 @@ def process_conditions(system: "SystemElements") -> None:
     assert system.shape_system_matrix is not None
     assert system.system_displacement_vector is not None
     for i in range(system.shape_system_matrix):
-        if system.system_displacement_vector[i] == 0:
+        if (
+            system.system_displacement_vector[i] == 0
+            or i in system._prescribed_displacements
+        ):
             indexes.append(i)
         else:
             system._remainder_indexes.append(i)
@@ -300,6 +345,21 @@ def process_conditions(system: "SystemElements") -> None:
     assert system.system_force_vector is not None
     assert system.system_matrix is not None
     system.reduced_force_vector = np.delete(system.system_force_vector, indexes, 0)
+
+    # correct the reduced force vector for imposed (non-zero) displacements:
+    # K_ff * u_f = F_f - K_fr * u_r
+    if system._prescribed_displacements:
+        prescribed_indexes = sorted(system._prescribed_displacements.keys())
+        prescribed_values = np.array(
+            [system._prescribed_displacements[i] for i in prescribed_indexes]
+        )
+        system.reduced_force_vector -= (
+            system.system_matrix[
+                np.ix_(system._remainder_indexes, prescribed_indexes)
+            ]
+            @ prescribed_values
+        )
+
     system.reduced_system_matrix = np.delete(system.system_matrix, indexes, 0)
     system.reduced_system_matrix = np.delete(system.reduced_system_matrix, indexes, 1)
 
@@ -361,3 +421,19 @@ def process_supports(system: "SystemElements") -> None:
 
             el.compile_kinematic_matrix()
             el.compile_stiffness_matrix()
+
+    # imposed (non-zero) displacements and rotations on restrained degrees of freedom
+    assert system.system_displacement_vector is not None
+    for node_id, (ux, uy, phi_z) in system.loads_displacement.items():
+        for direction, displacement in ((1, ux), (2, uy), (3, phi_z)):
+            if displacement is None or displacement == 0:
+                continue
+            index = (node_id - 1) * 3 + direction - 1
+            if np.isnan(system.system_displacement_vector[index]):
+                raise FEMException(
+                    "StabilityError",
+                    f"An imposed displacement at node {node_id} in direction {direction} "
+                    "requires a support restraining that degree of freedom.",
+                )
+            system.system_displacement_vector[index] = displacement
+            system._prescribed_displacements[index] = displacement

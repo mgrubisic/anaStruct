@@ -94,6 +94,33 @@ class LoadCase:
         self.c += 1
         self.spec[f"dead_load-{self.c}"] = {"element_id": element_id, "g": g}
 
+    def thermal_load(
+        self,
+        element_id: Union[int, Sequence[int]],
+        delta_t: Union[float, Sequence[float]],
+        alpha: Union[float, Sequence[float]],
+        delta_t_gradient: Optional[Union[float, Sequence[float]]] = None,
+        h: Optional[Union[float, Sequence[float]]] = None,
+    ) -> None:
+        """
+        Apply a thermal load to an element.
+
+        :param element_id: (int/ list) representing the element ID
+        :param delta_t: (flt/ list) Uniform temperature change of the element
+        :param alpha: (flt/ list) Coefficient of thermal expansion of the element material
+        :param delta_t_gradient: (flt/ list) Temperature difference over the section depth.
+                                 Requires `h`.
+        :param h: (flt/ list) Section depth over which `delta_t_gradient` acts
+        """
+        self.c += 1
+        self.spec[f"thermal_load-{self.c}"] = {
+            "element_id": element_id,
+            "delta_t": delta_t,
+            "alpha": alpha,
+            "delta_t_gradient": delta_t_gradient,
+            "h": h,
+        }
+
     def __str__(self) -> str:
         return f"Loadcase {self.name}:\n" + pprint.pformat(self.spec)
 

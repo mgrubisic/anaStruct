@@ -85,6 +85,9 @@ class Element:
         self.q_direction: Optional[str] = None
         self.q_angle: Optional[float] = None
         self.dead_load: float = 0.0
+        # (alpha * delta_t, alpha * delta_t_gradient / h): free thermal strain and
+        # curvature of the element
+        self.temperature_load: tuple = (0.0, 0.0)
         self.N_1: Optional[float] = None
         self.N_2: Optional[float] = None
         self.bending_moment: Optional[np.ndarray] = None
@@ -282,6 +285,10 @@ class Element:
         el.q_perp_load = (
             el.q_perp_load[0] + other.q_perp_load[0],
             el.q_perp_load[1] + other.q_perp_load[1],
+        )
+        el.temperature_load = (
+            el.temperature_load[0] + other.temperature_load[0],
+            el.temperature_load[1] + other.temperature_load[1],
         )
 
         el.node_map[self.node_id1] = el.node_1 + other.node_1

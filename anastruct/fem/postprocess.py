@@ -83,9 +83,7 @@ class SystemLevel:
             node.Fx *= -1
             node.Fy *= -1
             node.Tz *= -1
-            node.ux = 0.0
-            node.uy = 0.0
-            node.phi_z = 0.0
+            # keep the (possibly imposed) displacements of the support node
 
     def element_results(self) -> None:
         """Determines the element results for all elements in the system on element level."""

@@ -9,6 +9,36 @@
 
 Analyse 2D Frames and trusses for slender structures. Determine the bending moments, shear forces, axial forces and displacements.
 
+## Fork additions
+
+This fork ([mgrubisic/anaStruct](https://github.com/mgrubisic/anaStruct)) adds two load
+types on top of upstream anaStruct, verified against analytical solutions in
+`tests/test_imposed_thermal.py`:
+
+* **Imposed displacements/rotations of supports** (support settlement):
+  `ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)`
+* **Thermal loads on elements** (uniform temperature change and linear temperature
+  gradient over the section depth):
+  `ss.thermal_load(element_id, delta_t, alpha, delta_t_gradient=None, h=None)` —
+  also available in `LoadCase`/`LoadCombination` as `lc.thermal_load(...)`
+
+```python
+from anastruct import SystemElements
+
+ss = SystemElements(EA=1e6, EI=1e4)
+ss.add_element([[0, 0], [10, 0]])
+ss.add_support_fixed(1)
+ss.add_support_roll(2)
+ss.imposed_displacement(2, uy=0.02)                              # 20 mm settlement
+ss.thermal_load(1, delta_t=20, alpha=1.2e-5,                     # uniform heating
+                delta_t_gradient=15, h=0.5)                      # + gradient
+ss.solve()
+```
+
+See `dev-docs/` for full documentation (usage recipes in `dev-docs/SKILLS.md`) and
+`examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,
+`examples/ex_29_thermal_loadcombination.py` for runnable examples.
+
 ## Installation
 
 For the actively developed version:
@@ -49,6 +79,8 @@ Got a question? Please ask on [gitter](https://gitter.im/anaStruct/lobby).
 * non-linear nodes :heavy_check_mark:
 * geometrical non linearity :heavy_check_mark:
 * load cases and load combinations :heavy_check_mark:
+* imposed displacements/rotations of supports (settlement) :heavy_check_mark:
+* thermal loads (uniform temperature change and gradient) :heavy_check_mark:
 * generic type of section - rectangle and circle :heavy_check_mark:
 * EU, US, UK steel section database :heavy_check_mark:
 
