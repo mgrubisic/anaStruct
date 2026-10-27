@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from anastruct.basic import converge
+from anastruct.basic import FEMException, converge
+from anastruct.fem.system_components.assembly import assemble_system_matrix
 
 if TYPE_CHECKING:
     from anastruct.fem.system import SystemElements
@@ -76,48 +77,96 @@ def stiffness_adaptation(
     return system.system_displacement_vector
 
 
+def smallest_buckling_factor(k0: np.ndarray, kg: np.ndarray) -> float:
+    """
+    Solve the generalized eigenvalue problem (K0 + λ Kg) x = 0 and return the smallest
+    positive λ.
+
+    K0 is the (symmetric, positive definite) reduced stiffness matrix of the first order
+    analysis. Kg is the reduced geometric stiffness matrix for the first order normal
+    forces N0. Compression makes Kg negative, so a buckling mode, K0 x = -λ Kg x, has a
+    positive λ for the loads that cause compression. A tensile normal force stiffens the
+    structure and gives a negative λ, which is no buckling mode.
+
+    Kg is singular when some members carry no normal force, so it is not inverted. The
+    problem is solved for ν = -1 / λ, the eigenvalues of K0⁻¹ Kg.
+
+    Args:
+        k0 (np.ndarray): Reduced stiffness matrix of the first order analysis.
+        kg (np.ndarray): Reduced geometric stiffness matrix for the first order normal forces.
+
+    Returns:
+        float: The smallest positive factor λ, or infinity when there is no buckling mode (no compression).
+    """
+    try:
+        # K0 = L Lᵀ: ν are the eigenvalues of the symmetric matrix L⁻¹ Kg L⁻ᵀ
+        chol = np.linalg.cholesky(k0)
+        half = np.linalg.solve(chol, kg)
+        symmetric = np.linalg.solve(chol, half.T).T
+        nu = np.linalg.eigvalsh((symmetric + symmetric.T) / 2)
+    except np.linalg.LinAlgError:
+        # the stiffness matrix is not positive definite: the general eigenvalue problem
+        try:
+            nu = np.linalg.eigvals(np.linalg.solve(k0, kg)).real
+        except np.linalg.LinAlgError as error:
+            raise FEMException(
+                "StabilityError",
+                "The stiffness matrix is singular, the buckling factor can not be "
+                "determined. Check your support conditions.",
+            ) from error
+
+    # buckling modes have a negative ν (compression); ignore ν = 0 (no geometric effect)
+    compressive = nu[nu < -1e-12 * max(float(np.max(np.abs(nu))), 1e-300)]
+    if compressive.size == 0:
+        logging.warning(
+            "There is no buckling mode: no compressive normal force acts on the free "
+            "degrees of freedom, so the buckling factor is infinite."
+        )
+        return float("inf")
+    return float(np.min(-1.0 / compressive))
+
+
 def det_linear_buckling(system: "SystemElements") -> float:
     """
-    Determine linear buckling by solving the generalized eigenvalue problem (k -λkg)x = 0.
+    Determine linear buckling by solving the generalized eigenvalue problem (K0 + λKg0)x = 0.
 
     geometrical stiffness matrix at buckling point: Kg = f(N_max)
     1st order forces: N0
     Nmax = λN0
-    Kg(Nmax) = λ(Kg(N0) = λKg0
+    Kg(Nmax) = λKg(N0) = λKg0
 
     2nd order analysis is solved by:
-    (K + λKg0)U = F
+    (K0 + λKg0)U = F
 
-    We are interested in the point that there is nog additional load F and displacement U
+    We are interested in the point that there is no additional load F and displacement U
     is possible.
-    (K + λKg0)ΔU = ΔF = 0
-    (K + λKg0) = 0
+    (K0 + λKg0)ΔU = ΔF = 0
 
     Is the generalized eigenvalue problem:
-    (A - λB)x = 0
+    (K0 + λKg0)x = 0, see :func:`smallest_buckling_factor`.
 
     :return: The factor the loads can be increased until the structure fails due to buckling.
     """
+    # first order analysis: the stiffness matrix and the normal forces N0. The elements
+    # may still hold the geometric stiffness of an earlier second order calculation.
+    for el in system.element_map.values():
+        el.compile_stiffness_matrix()
     system.solve()
-
-    # buckling
+    free = list(system._remainder_indexes)
     k0 = np.array(system.reduced_system_matrix)  # copy
 
+    # the same matrix with the geometric stiffness of the elements added
     for el in system.element_map.values():
         el.compile_geometric_non_linear_stiffness_matrix()
-        el.reset()
+    assemble_system_matrix(system)
+    assert system.system_matrix is not None
+    kg = np.array(system.system_matrix)[np.ix_(free, free)] - k0
 
-    system.solve()
-    kg = system.reduced_system_matrix - k0
-    # solve (k -λkg)x = 0
+    # the elements are used again by the caller: back to the first order stiffness
+    for el in system.element_map.values():
+        el.compile_stiffness_matrix()
 
-    # The following two lines are equivalent to the cleaner
-    # `scipy.linalg.eigvals(k0, kg)``, but doing this in numpy
-    # instead allows us to drop the very heavy scipy dependency
-    # that was needed for no other reason than this one line.
-    invkg_k0 = np.linalg.inv(kg) * k0
-    eigenvalues = np.abs(np.linalg.eigvals(invkg_k0))
-    return float(np.min(eigenvalues))
+    return smallest_buckling_factor(k0, kg)
 
 
 def geometrically_non_linear(
@@ -148,11 +197,21 @@ def geometrically_non_linear(
 
         buckling_factor = det_linear_buckling(buckling_system)
 
+    # first order analysis: the normal forces N0 (back to the first order stiffness,
+    # the elements may hold the geometric stiffness of an earlier calculation)
+    for el in system.element_map.values():
+        el.compile_stiffness_matrix()
     system.solve()
 
+    # second order analysis
     for el in system.element_map.values():
         el.compile_geometric_non_linear_stiffness_matrix()
 
     system.solve()
+
+    # the results are second order; the elements go back to the first order stiffness, so
+    # that a next (linear) calculation, or another second order calculation, starts from it
+    for el in system.element_map.values():
+        el.compile_stiffness_matrix()
 
     return buckling_factor

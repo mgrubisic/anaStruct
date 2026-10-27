@@ -62,7 +62,7 @@ Eigen-deformacije elementa (u generaliziranim koordinatama koje koristi
 rotacija kraja 2 rel. tetivi]):
 
 ```
-e0 = [α·ΔT·l ,  κ·l/2 ,  κ·l/2]        κ = α·ΔT_grad / h
+e0 = [α·ΔT·l , −κ·l/2 , −κ·l/2]        κ = α·ΔT_grad / h
 p  = Aᵀ · C · e0                        (6-vektor, globalne koordinate)
 ```
 
@@ -78,37 +78,57 @@ patternu: `element_primary_force_vector -= p`, a `system_force_vector += p` na
 Ručna provjera (fiksno-fiksni vodoravni štap): uniformni ΔT →
 p = EAαΔT·[−1,0,0,1,0,0] (čvorove gura van = ekvivalentno opterećenje širenja
 ✓); reakcije kroz post-procesiranje ispadnu ±EAαΔT prema unutra ✓, N = −EAαΔT
-(tlak) ✓. Gradijent → p = [0,0,−EIκ,0,0,+EIκ] (samo momenti, bez poprečnih
-sila ✓), konstantan |M| = EIκ ✓.
+(tlak) ✓. Gradijent → p = [0,0,+EIκ,0,0,−EIκ] (samo momenti, bez poprečnih
+sila ✓), konstantan |M| = EIκ ✓. Predznak −κ u e0 slijedi iz kinematičke matrice
+(relativne rotacije krajeva su pozitivne za zakrivljenost prema desnoj strani
+smjera čvor1→čvor2, tj. prema hladnijem licu): pozitivan gradijent = toplije lice
+lijevo (gornje za vodoravne elemente). Neovisna provjera: vrh konzole −κL²/2 (dolje),
+slobodno oslonjena greda +κL²/8 (nadvišenje), upeta greda: progibni moment EIκ.
 
 ## 4. Konvencije predznaka (najskuplje naučena lekcija)
 
-Izlazni getteri i interni vektori NEMAJU isti predznak:
+Ova sekcija je ispravljena nakon neovisnog pregleda; ranija verzija je tvrdila da je
+pozitivan `Fy`/`q` usmjeren dolje i da je pozitivan `uy` slijeganje, a to je POGREŠNO.
 
-| veličina | interni vektor | `get_node_displacements` |
-|---|---|---|
-| ux | +x | isto kao interno |
-| uy | +gore | **−interno** (default: + = dolje) |
-| phi_z | + = u smjeru kazaljke | **−interno** |
+**Ulazi** (uz zadani `invert_y_loads=True`): pozitivan `Fy`, `q` i zadani `uy` djeluju
+u smjeru **+y geometrije (prema gore)**; `Fx` u smjeru +x; opterećenje prema dolje je
+negativno, slijeganje je negativan `uy`. Uz `invert_y_loads=False` pozitivan `Fy`
+djeluje u smjeru −y (gravitacija). Neovisno sidro: `Fy=+1` na vrhu okomitog stupa
+(y=+L) daje `N=+1` (vlak), a `Fy=−1` tlak (faktor izvijanja je konačan samo za tlak).
 
-Uz defaultni `invert_y_loads=True` (`orientation_cs = -1`): pozitivan `Fy`/`q`
-djeluje dolje i daje pozitivni prijavljeni `uy`; pozitivan `Tz` daje
-**negativan** prijavljeni `phi_z`. Momenti/rotacije su dakle interno "obrnute"
-u odnosu na izlaz — to je postojeća kvirkica biblioteke, ne bug ove
-implementacije.
+**Izlazi** (okvir crteža: +x desno, +y gore):
+
+| veličina | `system_displacement_vector` | `node_map[i]` | `get_node_results_system` | `get_node_displacements` |
+|---|---|---|---|---|
+| ux | +x | −x | −x | **+x** |
+| uy | +dolje | +gore | +dolje | **+gore** |
+| phi_z | u smjeru kazaljke | | | u smjeru kazaljke |
+
+- `get_node_displacements` je u okviru crteža (koristiti njega za fizikalne provjere).
+- `phi_z` je u SVIM getterima pozitivan u smjeru kazaljke: `Tz=+1` na vrhu konzole
+  podiže vrh, a `phi_z` se prijavljuje kao `−ML/EI`. Zadana rotacija `phi_z=+0.01`
+  (suprotno kazaljci, kao `Tz`) se zato prijavljuje kao `−0.01`.
+- Reakcije: `reaction_forces[i].Fy` je pozitivan prema DOLJE (slobodno oslonjena greda
+  s `q=−1` daje `Fy=−5`), `Fx` je u okviru crteža (+desno), `Tz` suprotno kazaljci.
+- Momenti: **progib je negativan** (greda s `q=−10` ima `M=−qL²/8`); progib elementa
+  `w` je pozitivan prema dolje.
 
 Odluka: ulazi `imposed_displacement`/`thermal_load` prate **konvenciju
 odgovarajućih sila** (`ux`~`Fx`, `uy*orientation_cs`~`Fy`, `phi_z`~`Tz`), jer
-su tako strukturirane sve ostale ulazne metode. Posljedica koju treba znati:
-`get_node_displacements(...)["phi_z"]` prijavljuje zadanu rotaciju s obrnutim
-predznakom (kao i kod momentnog opterećenja). Pokriveno testom s komentarom.
+su tako strukturirane sve ostale ulazne metode. Pokriveno testovima.
 
 Ostale kvarkije:
 - `add_support_roll(direction=...)` — direction je **slobodni** smjer kotrljanja,
   ne obustavljeni! `direction="x"` (default) → obustavlja `uy`.
 - `add_support_roll(node_id=[2,3])` pada na assertu jer se `direction/angle/rotate`
   ne broadcastaju — ili liste za sve, ili zasebni pozivi.
-- `reaction_forces[i].Fy` > 0 znači silu oslonca NA konstrukciju prema gore.
+- `point_load` na čvoru s kosim valjkastim osloncem (kut 90°/180°) je dopušten, ali se
+  opterećenje primjenjuje u zaokrenutom sustavu oslonca (naslijeđeno iz upstreama).
+- `solve(geometrical_non_linear=True)` s nelinearnim elementima (`mp=`) vraća se kroz
+  `stiffness_adaptation` pa je rezultat linearan i `buckling_factor` je `None`
+  (naslijeđeno); `LoadCombination` rješava svaki slučaj posebno u drugom redu i
+  superponira rezultate, pa nema zajedničkog faktora izvijanja ni P-delta učinka
+  kombinacije.
 
 ## 5. Zamke na koje se naišlo
 
@@ -151,11 +171,17 @@ dodaci.
   13 testova zato nije provjeravalo asercije; testovi su prepisani u obične
   `test_*` funkcije (svi prolaze). Isti obrazac koriste i upstream testovi
   (`tests/test_analytical.py` itd.) — njihove asercije se također ne izvršavaju.
-- **Predznaci potvrđeni:** pozitivan `uy` = prema dolje (kao pozitivan `Fy` uz
-  `invert_y_loads=True`); pozitivan gradijent = toplije gornje lice (vrh konzole
-  ide dolje). Pozor: `node_map[i].uy` je u obrnutom okviru od
-  `get_node_results_system()`; fizikalni smjer čitati iz potonjeg
-  (y prema gore) ili iz `get_node_displacements()` (y prema dolje).
+- **Predznaci (ispravljeno — ranija verzija ove bilješke bila je POGREŠNA):**
+  uz zadani `invert_y_loads=True` pozitivan `Fy`, `q` i zadani `uy` djeluju u smjeru
+  **+y (prema gore)**, a ne u smjeru gravitacije (docstring konstruktora je bio
+  obrnut). Zato je slijeganje negativan `uy`. Neovisno sidro: `Fy=+1` na vrhu okomitog
+  stupa (y=+L) daje `N=+1` (vlak). `get_node_displacements()` je u okviru crteža
+  (+x desno, +y gore); ostali getteri se razlikuju (tablica u sekciji 4). Predznak
+  termičkog gradijenta je ispravljen u kodu
+  (`apply_temperature_load`): pozitivan gradijent = toplije lice lijevo od smjera
+  čvor1→čvor2 (gornje za vodoravne elemente), vrh konzole ide prema dolje (−κL²/2), a
+  slobodno oslonjena greda se nadvisuje (+κL²/8). Momenti: progib je negativan u
+  anaStruct.
 - **Ispravljeno:** dvostruko brojanje zadanog pomaka u `LoadCombination`
   (`LoadCase.imposed_displacement` + faktor), pad u `insert_node` nakon
   `thermal_load`, tihi gubitak opterećenja u `discretize()`/`remove_loads()`,
@@ -206,12 +232,34 @@ dodaci.
   `{1:0}`/`{2:0}` na zglobnim čvorovima (stanje je u `node.hinge`/`internal_hinges`). Čvorovi u `internal_hinges` se uspoređuju po ID-ju jer
   postprocesiranje zamjenjuje objekte u `node_map` (i briše `node.hinge`, koji
   `solve()` svaki put ponovno postavlja).
+- **Faktor izvijanja (ispravljeno):** `det_linear_buckling` je imao tri nepovezana
+  uzroka netočnih faktora (npr. 6697 umjesto Eulerovih 493,5 za `ex_18`):
+  1. `np.linalg.inv(kg) * k0` je množenje po elementima, a svojstvena zadaća traži
+     matrični umnožak; usto je `kg` singularan kad neki članovi nemaju aksijalnu silu.
+     Sada: `smallest_buckling_factor` rješava `K0 x = -λ Kg x` preko Choleskog
+     (svojstvene vrijednosti `L⁻¹ Kg L⁻ᵀ`, bez invertiranja `Kg`) i vraća najmanji
+     pozitivni λ (samo tlak izvija); bez tlaka je faktor `inf`.
+  2. `process_conditions` je pri svakom ponovnom `solve()` čitao upete stupnjeve
+     slobode iz vektora pomaka; nakon prvog `solve()` je svaki stupanj čije je
+     rješenje točno 0 (poprečni pomaci aksijalno opterećenog stupa) izgledao upet.
+     Sada se maska upetih stupnjeva (`_restrained_dofs`) postavlja jednom u
+     `process_supports`, a `_remainder_indexes` se resetira (dopisivao se pri svakom
+     solveu).
+  3. Geometrijska matrica krutosti elementa: konverzija koordinatnog sustava množila
+     je samo stupce (`K · S` umjesto `S K S`), pa je matrica bila nesimetrična za sve
+     elemente koji nisu okomiti (vodoravni stup: faktor 240000 umjesto 493,5);
+     tipfeler `s1*c2` (umjesto `s2*c2`); za kose valjkaste oslonce (`a1 != a2`)
+     matrica se sada računa za os elementa i zaokreće u sustav čvora
+     (`R(a_čvor − kut)`, izvedeno iz kinematičke matrice); za otpuštene krajeve
+     (zglob, opruga) se geometrijska matrica kondenzira preko `G = inv(D_greda)·D`.
+  Provjera: Euler (zglobni 493,48, konzola 123,37, upeto-zglobni 1009,54, obostrano
+  upeti 1973,95 uz n=20), vodoravni i kosi stupovi, portal s krutom gredom, opruga na
+  dnu stupa (μL·tan(μL) = kL/EI), zglob na kraju elementa; testovi u
+  `tests/test_buckling.py`.
 - **Poznato, naslijeđeno iz upstreama (nije mijenjano):**
-  - Geometrijski nelinearna matrica dodaje nekondenziranu geometrijsku krutost i
-    na otpuštenim krajevima; `det_linear_buckling` (`solver.py`) koristi
-    `np.linalg.inv(kg) * k0` (množenje po elementima, ne matrično), pa su
-    faktori izvijanja nevjerodostojni.
   - `insert_node_old` i `add_element_grid` dijele `spring` rječnike.
+  - Rešetkasti štapovi nemaju savojnu krutost (EI = 1e-14), pa se izvijanje
+    pojedinog štapa rešetke ne modelira.
 - Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
   zakrivljenost/istezanje (dokumentirano u docstringu).
 

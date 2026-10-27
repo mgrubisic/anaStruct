@@ -13,9 +13,12 @@ ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)
   `solve()` raises `FEMException("StabilityError", ...)`.
 - Sign conventions follow the corresponding loads:
   - `ux` — like a positive `Fx` point load (positive = +x),
-  - `uy` — like a positive `Fy` point load (positive = **downwards** by default),
-  - `phi_z` — like a positive `Tz` moment load (radians).
-- Not multiplied by `load_factor` (it is a kinematic condition, not a load).
+  - `uy` — like a positive `Fy` point load (positive = **+y, upwards** with the default
+    `invert_y_loads=True`, so a settlement is a negative `uy`),
+  - `phi_z` — like a positive `Tz` moment load (radians); the getters report rotations
+    positive clockwise, so an imposed `phi_z` is reported with the opposite sign.
+- Multiplied by `load_factor`, like the loads, so it superposes in a `LoadCombination`
+  (use `LoadCase.imposed_displacement`).
 - Repeated calls for the same node merge: only the passed components are
   overridden; pass `0` to clear a previously imposed component.
 - Works with `add_support_fixed`, `add_support_hinged`, `add_support_roll`,
@@ -26,7 +29,7 @@ ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)
 
 | Case | Formula |
 |---|---|
-| Propped cantilever, settlement Δ of the prop | R_prop = −3EIΔ/L³ (pulls beam down), M_fixed = −3EIΔ/L² |
+| Propped cantilever, prop moved by Δ (`uy = +Δ`; a settlement is `uy = −Δ`) | R_prop = −3EIΔ/L³, M_fixed = −3EIΔ/L² (opposite signs for a settlement) |
 | Fixed-fixed beam, imposed rotation φ at one end | M_near = 4EIφ/L, M_far = 2EIφ/L, R = 6EIφ/L² |
 | Fixed-fixed bar, imposed axial displacement dx | N = EA·dx/L (tension) |
 
@@ -47,8 +50,9 @@ ss.thermal_load(element_id, delta_t, alpha, delta_t_gradient=None, h=None)
   section; **requires** `h` (section depth). Free curvature
   `kappa = alpha * delta_t_gradient / h` → restrained moment `EI * kappa`.
 - A **positive gradient = warmer upper face** (the face pointing to +y for a
-  horizontal element): a cantilever fixed at its first node deflects downwards
-  (positive `uy`).
+  horizontal element): the upper fibres are longer, so a cantilever fixed at its first
+  node deflects downwards (`uy < 0` in `get_node_displacements`, which is positive
+  towards +y) and a simply supported beam cambers upwards.
 - Sequences are accepted (like `q_load`), e.g. `element_id=[1, 2]` with scalar
   or per-element `delta_t`/`alpha`.
 - Multiplied by `load_factor`, so `LoadCase`/`LoadCombination` factors apply.
@@ -62,8 +66,9 @@ ss.thermal_load(element_id, delta_t, alpha, delta_t_gradient=None, h=None)
 |---|---|
 | Fixed-fixed beam, uniform dT | N = −EA·α·dT (compression), M = 0 |
 | Cantilever, uniform dT | tip ux = α·dT·L, zero reactions |
-| Fixed-fixed beam, gradient | constant M = EI·α·ΔT_grad/h, V = 0 |
-| Cantilever, gradient | tip uy = κL²/2, zero reactions |
+| Fixed-fixed beam, gradient | constant sagging moment EI·α·ΔT_grad/h (negative in anaStruct), V = 0 |
+| Cantilever, gradient | tip uy = −κL²/2 (down), zero reactions |
+| Simply supported beam, gradient | mid-span uy = +κL²/8 (camber), zero reactions |
 | Restrained truss bar, uniform dT | N = −EA·α·dT |
 
 See `examples/ex_28_thermal_load.py`.

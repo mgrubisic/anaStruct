@@ -259,8 +259,9 @@ def test_trapezoidal_q_load_on_a_truss_element():
 
 
 def test_thermal_gradient_on_an_element_with_an_end_hinge():
-    # fixed-pinned beam with a temperature gradient: M_fixed = 3/2 * EI * kappa,
-    # also when the hinge is an element end release
+    # fixed-pinned beam with a temperature gradient (warmer upper face):
+    # M_fixed = 3/2 * EI * kappa (sagging, so negative in anaStruct), also when the hinge
+    # is an element end release
     kappa = 1.2e-5 * 15.0 / 0.5
     length = 10.0
 
@@ -275,8 +276,8 @@ def test_thermal_gradient_on_an_element_with_an_end_hinge():
 
     for spring in (None, {2: 0}):
         system = solve(spring)
-        assert system.reaction_forces[1].Tz == approx(1.5 * EI * kappa)
-        assert system.reaction_forces[2].Fy == approx(1.5 * EI * kappa / length)
+        assert system.reaction_forces[1].Tz == approx(-1.5 * EI * kappa)
+        assert system.reaction_forces[2].Fy == approx(-1.5 * EI * kappa / length)
 
 
 def test_thermal_gradient_on_an_element_with_a_rotational_spring():
@@ -289,5 +290,6 @@ def test_thermal_gradient_on_an_element_with_a_rotational_spring():
     system.thermal_load(1, delta_t=0, alpha=1.2e-5, delta_t_gradient=15, h=0.5)
     system.solve()
 
-    assert system.get_node_displacements(2)["uy"] == approx(kappa * 10.0**2 / 2)
+    # the tip moves down: the warmer face is the upper face
+    assert system.get_node_displacements(2)["uy"] == approx(-kappa * 10.0**2 / 2)
     assert system.reaction_forces[1].Tz == approx(0.0, abs=1e-9)

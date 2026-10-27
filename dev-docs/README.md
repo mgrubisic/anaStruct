@@ -24,8 +24,8 @@ ss.add_element([[0, 0], [10, 0]])
 ss.add_support_fixed(1)
 ss.add_support_roll(2)
 
-# settlement of 20 mm at the roller (positive uy = downwards by default)
-ss.imposed_displacement(2, uy=0.02)
+# settlement of 20 mm at the roller (uy is positive upwards like Fy: settlement < 0)
+ss.imposed_displacement(2, uy=-0.02)
 
 # uniform temperature increase + gradient over a 0.5 m deep section
 ss.thermal_load(1, delta_t=20, alpha=1.2e-5, delta_t_gradient=15, h=0.5)
@@ -52,6 +52,7 @@ print(ss.reaction_forces[2].Fy)
 | `anastruct/fem/elements.py` | Element attribute `temperature_load`, summed in `Element.__add__`; `constitutive_matrix()` rewritten: exact static condensation of hinges and rotational springs in series (fixes 4EI/l → 3EI/l and NaN for finite springs) |
 | `anastruct/fem/postprocess.py` | `reaction_forces()` keeps the (possibly imposed) support displacements instead of zeroing them |
 | `anastruct/fem/util/load.py` | `LoadCase.thermal_load()`, `LoadCase.imposed_displacement()` |
+| `tests/test_buckling.py` | 22 tests: buckling factor against Euler columns (vertical, horizontal), frames, springs, hinges, eigenvalue problem, repeated solves |
 | `tests/test_discretize_internal_hinges.py` | 27 tests: internal-hinge detection (order independence, release rules), discretize against the original model |
 | `tests/test_hinges_springs.py` | 12 tests: hinge/spring stiffness against analytical results, incl. thermal loads |
 | `tests/test_imposed_thermal.py` | 30 plain test functions, verified against analytical solutions (incl. load combinations, model edits, sign conventions) |
@@ -62,7 +63,7 @@ print(ss.reaction_forces[2].Fy)
 ## Running tests
 
 ```bash
-python -m pytest                          # whole suite (285 tests)
+python -m pytest                          # whole suite (307 tests)
 python -m pytest tests/test_imposed_thermal.py -v   # new tests only
 ```
 

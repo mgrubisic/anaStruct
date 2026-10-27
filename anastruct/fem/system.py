@@ -91,8 +91,11 @@ class SystemElements:
             EI (float, optional): Bending stiffness. Defaults to 5e3.
             load_factor (float, optional): Load factor by which to multiply all loads. Defaults to 1.0.
             mesh (int, optional): Number of mesh elements, only used for plotting. Defaults to 50.
-            invert_y_loads (bool, optional): Whether to invert the y-direction of the loads, such that a positive
-                Fy load will be in the direction of gravity. Defaults to True.
+            invert_y_loads (bool, optional): Whether to invert the y-direction of the loads. The y-axis of the
+                calculation points down, so with the default (True) the loads follow the y-axis of the structure:
+                a positive Fy (and q, and imposed uy) acts in the +y direction (upwards in a drawing with y up) and a
+                downward load is negative. If False, a positive Fy acts in the -y direction (the direction of
+                gravity in such a drawing). Defaults to True.
         """
         # init object
         self.post_processor = post_sl(self)
@@ -161,6 +164,9 @@ class SystemElements:
         self.loads_temperature: Dict[int, Tuple[float, float]] = (
             {}
         )  # element ids with a temperature load {element_id: (alpha * delta_t, alpha * delta_t_gradient / h)}
+
+        # boolean mask of the restrained degrees of freedom, set once by process_supports
+        self._restrained_dofs: Optional[np.ndarray] = None
 
         # map of system matrix indexes to imposed (non-zero) displacement values,
         # processed in system_components.assembly.process_supports
@@ -1420,7 +1426,11 @@ class SystemElements:
         so a support restraining the respective degree of freedom is required. The sign
         conventions follow the corresponding loads: `ux` acts like a positive `Fx` point
         load, `uy` like a positive `Fy` point load (with the default `invert_y_loads=True`
-        a positive `uy` is downwards) and `phi_z` like a positive `Tz` moment load.
+        a positive `uy` is in the +y direction, upwards, so a settlement is a negative
+        `uy`) and `phi_z` like a positive `Tz` moment load. Note that the getters report
+        rotations positive in the clockwise direction, so an imposed `phi_z` is reported
+        with the opposite sign by `get_node_displacements`, like the rotation caused by a
+        moment load `Tz`.
         Like the loads, imposed displacements are multiplied by the `load_factor`, so
         that they can be superposed in a :class:`.LoadCombination` (see
         :meth:`.LoadCase.imposed_displacement`).
@@ -1501,9 +1511,11 @@ class SystemElements:
         faces of the element), causes a free curvature
         `alpha * delta_t_gradient / h`, with `h` the section depth. A positive
         gradient corresponds to a warmer upper face (the face pointing towards the
-        positive global y-direction for a horizontal element), so that a cantilever
-        fixed at its first node deflects downwards (positive `uy` with the default
-        `invert_y_loads=True`). In general the warmer face is the face on the left
+        positive global y-direction for a horizontal element): the upper fibres are
+        longer, so a cantilever fixed at its first node deflects downwards (towards the
+        colder face, a negative `uy` in `get_node_displacements`) and a simply supported
+        beam cambers upwards. The sign does not depend on `invert_y_loads`. In general
+        the warmer face is the face on the left
         of the element when looking from its first to its second node. Elements that
         are not vertical are oriented from left to right, so this is their upper
         face; for vertical elements it depends on the order in which the end points

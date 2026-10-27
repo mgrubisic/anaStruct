@@ -61,21 +61,51 @@ def cantilever():
 
 
 def test_propped_cantilever_settlement():
-    # Propped cantilever with a downward settlement delta of the prop:
-    # R_prop = 3 * EI * delta / L**3, M_fixed = 3 * EI * delta / L**2
-    # (the reaction of the prop is reduced, so it is reported negative)
+    # Propped cantilever with an imposed displacement delta of the prop:
+    # |R_prop| = 3 * EI * delta / L**3, |M_fixed| = 3 * EI * delta / L**2.
+    # uy is positive in the +y direction (upwards, like a load Fy): a settlement is a
+    # negative uy and gives the reactions of the opposite sign.
     delta = 0.02
-    system = propped_cantilever()
-    system.imposed_displacement(2, uy=delta)
+    for sign in (1, -1):  # +1: the prop moves up, -1: the prop settles
+        system = propped_cantilever()
+        system.imposed_displacement(2, uy=sign * delta)
+        system.solve()
+
+        assert system.reaction_forces[2].Fy == approx(-sign * 3 * EI * delta / L**3)
+        assert system.reaction_forces[1].Tz == approx(-sign * 3 * EI * delta / L**2)
+        # vertical equilibrium
+        assert system.reaction_forces[1].Fy + system.reaction_forces[2].Fy == approx(0)
+        # the imposed displacement is reported in the direction of +y
+        assert system.get_node_displacements(2)["uy"] == approx(sign * delta)
+        assert system.reaction_forces[2].uy == approx(sign * delta)
+
+
+def test_positive_load_and_imposed_displacement_act_in_the_same_direction():
+    # a positive Fy and a positive uy both act in the +y direction (upwards); with
+    # invert_y_loads=False they act in the -y direction
+    for invert, direction in ((True, 1), (False, -1)):
+        loaded = SystemElements(EA=EA, EI=EI, invert_y_loads=invert)
+        loaded.add_element([[0, 0], [L, 0]])
+        loaded.add_support_fixed(1)
+        loaded.point_load(2, Fy=1.0)
+        loaded.solve()
+        assert direction * loaded.get_node_displacements(2)["uy"] > 0
+
+        moved = propped_cantilever(invert_y_loads=invert)
+        moved.imposed_displacement(2, uy=0.01)
+        moved.solve()
+        assert direction * moved.get_node_displacements(2)["uy"] > 0
+
+
+def test_positive_fy_acts_in_the_y_direction_of_the_structure():
+    # a force along +y on the top node of a column (y = +L) pulls it: tension
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [0, L]])
+    system.add_support_fixed(1)
+    system.point_load(2, Fy=1.0)
     system.solve()
 
-    assert system.reaction_forces[2].Fy == approx(-3 * EI * delta / L**3)
-    assert system.reaction_forces[1].Tz == approx(-3 * EI * delta / L**2)
-    # vertical equilibrium
-    assert system.reaction_forces[1].Fy + system.reaction_forces[2].Fy == approx(0)
-    # the imposed displacement is reported
-    assert system.get_node_displacements(2)["uy"] == approx(delta)
-    assert system.reaction_forces[2].uy == approx(delta)
+    assert system.element_map[1].N_1 == approx(1.0)
 
 
 def test_fixed_fixed_imposed_rotation():
@@ -233,40 +263,43 @@ def test_cantilever_uniform_temperature():
 
 
 def test_fixed_fixed_temperature_gradient():
-    # Fixed-fixed beam with a temperature gradient over the section depth:
-    # constant bending moment M = EI * kappa, no shear
+    # Fixed-fixed beam with a temperature gradient over the section depth (warmer upper
+    # face): the upper fibres are restrained in compression and the lower fibres in
+    # tension, a sagging moment of the constant value EI * kappa, no shear. Sagging
+    # moments are negative in anaStruct.
     system = fixed_fixed()
     system.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
     system.solve()
 
     m = EI * KAPPA
-    assert system.reaction_forces[1].Tz == approx(m)
-    assert system.reaction_forces[2].Tz == approx(-m)
+    assert system.reaction_forces[1].Tz == approx(-m)
+    assert system.reaction_forces[2].Tz == approx(m)
     assert system.reaction_forces[1].Fy == approx(0)
     assert system.reaction_forces[2].Fy == approx(0)
     el = system.get_element_results(1)
-    assert el["Mmin"] == approx(m)
-    assert el["Mmax"] == approx(m)
+    assert el["Mmin"] == approx(-m)
+    assert el["Mmax"] == approx(-m)
     assert el["Qmin"] == approx(0)
     assert el["Qmax"] == approx(0)
 
 
 def test_cantilever_temperature_gradient():
-    # Cantilever with a temperature gradient curves freely with a constant
-    # curvature kappa: tip deflection = kappa * L**2 / 2, no internal forces
-    # (a positive gradient, warmer upper face, deflects the tip downwards)
+    # Cantilever with a temperature gradient curves freely with a constant curvature
+    # kappa: tip deflection = kappa * L**2 / 2, no internal forces. A positive gradient is
+    # a warmer upper face: the upper fibres are longer, so the tip moves down towards the
+    # colder lower face. get_node_displacements is positive in the direction of +y.
     system = cantilever()
     system.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
     system.solve()
 
-    assert system.get_node_displacements(2)["uy"] == approx(KAPPA * L**2 / 2)
-    assert system.get_node_results_system(2)["uy"] == approx(-KAPPA * L**2 / 2)
+    assert system.get_node_displacements(2)["uy"] == approx(-KAPPA * L**2 / 2)
     assert system.reaction_forces[1].Tz == approx(0)
     assert system.reaction_forces[1].Fy == approx(0)
 
 
 def test_propped_cantilever_temperature_gradient():
-    # Fixed-pinned beam with a temperature gradient: M_fixed = 3/2 * EI * kappa
+    # Fixed-pinned beam with a temperature gradient (warmer upper face):
+    # M_fixed = 3/2 * EI * kappa (sagging, so negative in anaStruct)
     system = SystemElements(EA=EA, EI=EI)
     system.add_element([[0, 0], [L, 0]])
     system.add_support_fixed(1)
@@ -274,9 +307,37 @@ def test_propped_cantilever_temperature_gradient():
     system.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
     system.solve()
 
-    assert system.reaction_forces[1].Tz == approx(1.5 * EI * KAPPA)
-    assert system.reaction_forces[1].Fy == approx(-1.5 * EI * KAPPA / L)
-    assert system.reaction_forces[2].Fy == approx(1.5 * EI * KAPPA / L)
+    assert system.reaction_forces[1].Tz == approx(-1.5 * EI * KAPPA)
+    assert system.reaction_forces[1].Fy == approx(1.5 * EI * KAPPA / L)
+    assert system.reaction_forces[2].Fy == approx(-1.5 * EI * KAPPA / L)
+
+
+def test_simply_supported_beam_with_a_warmer_upper_face_cambers_upwards():
+    # an arch-shaped beam: the middle rises by kappa * L**2 / 8 relative to the supports
+    # (a sun-heated bridge girder) and there are no internal forces
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [L, 0]])
+    system.add_support_hinged(1)
+    system.add_support_roll(2)
+    system.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
+    middle = system.insert_node(1, factor=0.5)["new_node_id"]
+    system.solve()
+
+    assert system.get_node_displacements(middle)["uy"] == approx(KAPPA * L**2 / 8)
+    assert system.reaction_forces[1].Fy == approx(0.0, abs=1e-9)
+
+
+def test_beam_with_a_warmer_lower_face_sags_downwards():
+    # the same beam with a negative gradient (warmer lower face) hangs through
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [L, 0]])
+    system.add_support_hinged(1)
+    system.add_support_roll(2)
+    system.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=-DT_GRAD, h=H)
+    middle = system.insert_node(1, factor=0.5)["new_node_id"]
+    system.solve()
+
+    assert system.get_node_displacements(middle)["uy"] == approx(-KAPPA * L**2 / 8)
 
 
 def test_truss_uniform_temperature():
@@ -345,21 +406,23 @@ def test_thermal_load_and_settlement_superposition():
 
 
 def test_gradient_warmer_face_on_the_left_of_a_vertical_element():
-    # column fixed at the base, left face warmer: the free end moves to the right
-    # (positive x), and to the left when the element is entered the other way round
+    # column fixed at the base, the face on the left of the direction from its first to
+    # its second node is warmer: the free end moves to the colder face. Drawn upwards the
+    # left face is the face towards -x, so the free end moves to +x; drawn downwards the
+    # left face is the face towards +x, so the free end moves to -x.
     up = SystemElements(EA=EA, EI=EI)
     up.add_element([[0, 0], [0, L]])
     up.add_support_fixed(1)
     up.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
     up.solve()
-    assert up.get_node_results_system(2)["ux"] == approx(KAPPA * L**2 / 2)
+    assert up.get_node_displacements(2)["ux"] == approx(KAPPA * L**2 / 2)
 
     down = SystemElements(EA=EA, EI=EI)
     down.add_element([[0, L], [0, 0]])
     down.add_support_fixed(2)
     down.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
     down.solve()
-    assert down.get_node_results_system(1)["ux"] == approx(-KAPPA * L**2 / 2)
+    assert down.get_node_displacements(1)["ux"] == approx(-KAPPA * L**2 / 2)
 
 
 def test_gradient_warmer_face_up_for_a_right_to_left_element():
@@ -369,7 +432,8 @@ def test_gradient_warmer_face_up_for_a_right_to_left_element():
     system.thermal_load(1, delta_t=0, alpha=ALPHA, delta_t_gradient=DT_GRAD, h=H)
     system.solve()
 
-    assert system.get_node_displacements(1)["uy"] == approx(KAPPA * L**2 / 2)
+    # the warmer face is the upper face, whatever the order of the end points
+    assert system.get_node_displacements(1)["uy"] == approx(-KAPPA * L**2 / 2)
 
 
 # ---------------------------------------------------------------------------
@@ -439,11 +503,12 @@ def test_insert_node_carries_the_thermal_load_to_both_new_elements():
         result["new_element_id1"],
         result["new_element_id2"],
     }
-    # free end of the cantilever: kappa * L**2 / 2, new middle node: kappa * (L/2)**2 / 2
-    assert system.get_node_displacements(2)["uy"] == approx(KAPPA * L**2 / 2)
+    # free end of the cantilever: -kappa * L**2 / 2 (down), new middle node:
+    # -kappa * (L/2)**2 / 2
+    assert system.get_node_displacements(2)["uy"] == approx(-KAPPA * L**2 / 2)
     middle = result["new_node_id"]
     assert system.get_node_displacements(middle)["uy"] == approx(
-        KAPPA * (L / 2) ** 2 / 2
+        -KAPPA * (L / 2) ** 2 / 2
     )
 
 

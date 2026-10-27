@@ -52,10 +52,15 @@ def apply_temperature_load(system: "SystemElements") -> None:
     """Apply a temperature load to the system
 
     The equivalent nodal forces are derived from the free thermal eigen strains of
-    the element: e0 = [alpha * delta_t * l, kappa * l / 2, kappa * l / 2], with
-    kappa = alpha * delta_t_gradient / h the free thermal curvature. The fixed-end
-    forces are obtained with the element's own kinematic and constitutive matrices,
-    so (internal) hinges and springs at the element ends are accounted for
+    the element: e0 = [alpha * delta_t * l, -kappa * l / 2, -kappa * l / 2], with
+    kappa = alpha * delta_t_gradient / h the free thermal curvature. The sign of the
+    curvature follows from the kinematic matrix: the relative end rotations are positive
+    for a curvature that bends the element towards its right-hand side (looking from
+    its first to its second node), which is the side of the colder face. A positive
+    gradient is a warmer face on the left (the upper face of a horizontal element), so
+    the free end of a cantilever bends towards the colder face. The fixed-end
+    forces are obtained with the element's own kinematic and condensed constitutive
+    matrices, so (internal) hinges and springs at the element ends are accounted for
     automatically.
 
     Args:
@@ -67,7 +72,7 @@ def apply_temperature_load(system: "SystemElements") -> None:
             continue
 
         e0 = np.array(
-            [strain * element.l, curvature * element.l / 2, curvature * element.l / 2]
+            [strain * element.l, -curvature * element.l / 2, -curvature * element.l / 2]
         )
         if element.type == "truss":
             e0[1] = e0[2] = 0.0
@@ -324,14 +329,19 @@ def process_conditions(system: "SystemElements") -> None:
         system (SystemElements): System to be processed
     """
     indexes = []
+    system._remainder_indexes = []
     # remove the unsolvable values from the matrix and vectors
     assert system.shape_system_matrix is not None
     assert system.system_displacement_vector is not None
+    # The restrained degrees of freedom are determined once, in process_supports. The
+    # displacement vector can not be used again after a solve: it then holds the
+    # solution, and a degree of freedom that is exactly 0 (e.g. the transverse
+    # displacements of a column under an axial load) is not a restrained one.
+    restrained = system._restrained_dofs
+    if restrained is None:
+        restrained = system.system_displacement_vector == 0
     for i in range(system.shape_system_matrix):
-        if (
-            system.system_displacement_vector[i] == 0
-            or i in system._prescribed_displacements
-        ):
+        if restrained[i] or i in system._prescribed_displacements:
             indexes.append(i)
         else:
             system._remainder_indexes.append(i)
@@ -444,3 +454,8 @@ def process_supports(system: "SystemElements") -> None:
                 )
             system.system_displacement_vector[index] = displacement
             system._prescribed_displacements[index] = displacement
+
+    # the restrained degrees of freedom (value 0, or an imposed displacement)
+    system._restrained_dofs = system.system_displacement_vector == 0
+    for index in system._prescribed_displacements:
+        system._restrained_dofs[index] = True

@@ -85,6 +85,10 @@ Impose the displacements before the first :meth:`~anastruct.fem.system.SystemEle
 
 .. automethod:: anastruct.fem.system.SystemElements.imposed_displacement
 
+Like a load :code:`Fy`, a positive :code:`uy` is in the +y direction (upwards), so a settlement is negative; the
+rotation :code:`phi_z` is positive like a moment load :code:`Tz`, and is reported with the opposite sign by
+:code:`get_node_displacements`.
+
 Example
 .......
 
@@ -94,5 +98,5 @@ Example
     ss.add_element([[0, 0], [10, 0]])
     ss.add_support_fixed(1)
     ss.add_support_roll(2)
-    ss.imposed_displacement(node_id=2, uy=0.02)  # 20 mm downwards
+    ss.imposed_displacement(node_id=2, uy=-0.02)  # 20 mm downwards (uy is positive upwards, like Fy)
     ss.solve()

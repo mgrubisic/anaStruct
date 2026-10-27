@@ -17,7 +17,9 @@ types on top of upstream anaStruct, verified against analytical solutions in
 
 * **Imposed displacements/rotations of supports** (support settlement):
   `ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)` — also available in
-  `LoadCase`/`LoadCombination` as `lc.imposed_displacement(...)`
+  `LoadCase`/`LoadCombination` as `lc.imposed_displacement(...)`. Like the loads, a
+  positive `uy` acts in the +y direction (upwards, like a positive `Fy`), so a settlement
+  is a negative `uy`
 * **Thermal loads on elements** (uniform temperature change and linear temperature
   gradient over the section depth):
   `ss.thermal_load(element_id, delta_t, alpha, delta_t_gradient=None, h=None)` —
@@ -30,7 +32,7 @@ ss = SystemElements(EA=1e6, EI=1e4)
 ss.add_element([[0, 0], [10, 0]])
 ss.add_support_fixed(1)
 ss.add_support_roll(2)
-ss.imposed_displacement(2, uy=0.02)                              # 20 mm settlement
+ss.imposed_displacement(2, uy=-0.02)                             # 20 mm settlement (down)
 ss.thermal_load(1, delta_t=20, alpha=1.2e-5,                     # uniform heating
                 delta_t_gradient=15, h=0.5)                      # + gradient
 ss.solve()
@@ -39,8 +41,10 @@ ss.solve()
 The fork also corrects the stiffness of **hinges and rotational springs** at element
 ends (`spring={node: k}`, internal hinges): a hinge is condensed exactly (an element with
 one hinge has 3EI/l instead of 4EI/l) and a finite spring `k` acts in series with the
-element, instead of giving wrong values or NaN. See `docs/source/elements.rst`. `discretize()` and the detection of internal hinges
-(independent of the order in which the elements are added) were reworked as well.
+element, instead of giving wrong values or NaN. See `docs/source/elements.rst`.
+`discretize()` and the detection of internal hinges (independent of the order in which
+the elements are added) were reworked as well, and the buckling factor of
+`solve(geometrical_non_linear=True)` now agrees with the Euler buckling loads.
 
 See `dev-docs/` for full documentation (usage recipes in `dev-docs/SKILLS.md`) and
 `examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,
