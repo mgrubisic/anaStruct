@@ -72,9 +72,7 @@ def apply_temperature_load(system: "SystemElements") -> None:
         if element.type == "truss":
             e0[1] = e0[2] = 0.0
 
-        primary_force = (
-            element.kinematic_matrix.T @ element.constitutive_matrix @ e0
-        )
+        primary_force = element.kinematic_matrix.T @ element.constitutive_matrix @ e0
 
         element.element_primary_force_vector -= primary_force
 
@@ -354,9 +352,7 @@ def process_conditions(system: "SystemElements") -> None:
             [system._prescribed_displacements[i] for i in prescribed_indexes]
         )
         system.reduced_force_vector -= (
-            system.system_matrix[
-                np.ix_(system._remainder_indexes, prescribed_indexes)
-            ]
+            system.system_matrix[np.ix_(system._remainder_indexes, prescribed_indexes)]
             @ prescribed_values
         )
 
@@ -425,6 +421,16 @@ def process_supports(system: "SystemElements") -> None:
     # imposed (non-zero) displacements and rotations on restrained degrees of freedom
     assert system.system_displacement_vector is not None
     for node_id, (ux, uy, phi_z) in system.loads_displacement.items():
+        if node_id in system.inclined_roll:
+            raise FEMException(
+                "Invalid parameters",
+                f"Imposed displacements on inclined roller support {node_id} are not supported.",
+            )
+        if phi_z is not None and system.node_map[node_id] in system.internal_hinges:
+            raise FEMException(
+                "Invalid parameters",
+                f"A rotation cannot be imposed on internal hinge {node_id}.",
+            )
         for direction, displacement in ((1, ux), (2, uy), (3, phi_z)):
             if displacement is None or displacement == 0:
                 continue

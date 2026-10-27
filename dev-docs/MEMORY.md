@@ -9,10 +9,12 @@
   — prisilni pomaci/rotacije oslonaca (slijeganje).
 - `SystemElements.thermal_load(element_id, delta_t, alpha, delta_t_gradient=None, h=None)`
   — uniformno zagrijavanje + linearni gradijent kroz visinu presjeka.
-- `LoadCase.thermal_load(...)` — integracija s LoadCase/LoadCombination
+- `LoadCase.thermal_load(...)`, `LoadCase.imposed_displacement(...)` — integracija s LoadCase/LoadCombination
   (faktori kombinacija rade, provjereno).
-- 13 novih testova u `tests/test_imposed_thermal.py` — svi analitički
-  verificirani; cijeli suite: **224 passed**.
+- 30 testova u `tests/test_imposed_thermal.py` — analitički verificirani;
+  cijeli suite: **241 passed**. VAŽNO: testovi su obične `test_*` funkcije;
+  ugniježđeni `describe_/context_/it_` blokovi se u ovom okruženju ne izvršavaju
+  (vidi SPOZNAJE.md).
 - `mypy anastruct` — bez novih grešaka (1 preostala je naslijeđena u
   `basic.py:41`, postoji i u upstreamu).
 - Primjeri: `examples/ex_27_imposed_displacement.py`,
@@ -27,22 +29,15 @@
    `add_support_*`).
 2. Toplina = **uniformno + gradijent** s eksplicitnim `alpha` i `h` (modul nema
    pojam materijala ni visine presjeka).
-3. Integracija **samo** s LoadCase/LoadCombination. Svjesno NIJE uključeno:
-   `remove_loads()`, `discretize()`, `insert_node()`, plotter, Sphinx docs.
+3. Integracija s LoadCase/LoadCombination, `remove_loads()`, `discretize()`,
+   `insert_node()` i Sphinx docs (nadopunjeno nakon reviewa); plotter nije uključen.
 4. Predznaci prate postojeće load-konvencije (`uy * orientation_cs`), ne
    izlazne gettere — vidi SPOZNAJE.md.
 
 ## Otvoreno / mogući sljedeći koraci
 
-- [ ] Sphinx dokumentacija: dodati `automethod` zapise u `docs/source/loads.rst`
-      (thermal_load) i `docs/source/supports.rst` (imposed_displacement).
 - [ ] Plotter: prikaz toplinskog opterećenja i prisilnih pomaka
       (`anastruct/fem/plotter/mpl.py`, pattern `__q_load_patch`).
-- [ ] `remove_loads()` proširiti na `loads_temperature` (+ reset
-      `el.temperature_load`), ako se pokaže potrebnim.
-- [ ] `discretize()`/`insert_node()`: prenos `loads_temperature` i
-      `loads_displacement` na novu mrežu (vidi kako se prenose `loads_q` —
-      `system.py` ~L2264-2280).
 - [ ] `deflection`/`extension` krivulje: dodati slobodnu toplinsku
       zakrivljenost/istezanje u `ElementLevel.determine_displacements`
       (`postprocess.py` ~L238) ako zatreba točan oblik progiba, ne samo čvorove.

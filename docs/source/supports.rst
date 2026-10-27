@@ -74,3 +74,25 @@ Example
 .. image:: img/supports/spring.png
 
 .. automethod:: anastruct.fem.system.SystemElements.add_support_spring
+
+
+Imposed displacements
+#####################
+
+A support settlement or an imposed rotation is prescribed to a degree of freedom that is restrained by a support.
+Impose the displacements before the first :meth:`~anastruct.fem.system.SystemElements.solve`. In a
+:class:`.LoadCombination` use :meth:`.LoadCase.imposed_displacement`, so that the settlement belongs to one load case.
+
+.. automethod:: anastruct.fem.system.SystemElements.imposed_displacement
+
+Example
+.......
+
+.. code-block:: python
+
+    ss = SystemElements(EA=1e6, EI=1e4)
+    ss.add_element([[0, 0], [10, 0]])
+    ss.add_support_fixed(1)
+    ss.add_support_roll(2)
+    ss.imposed_displacement(node_id=2, uy=0.02)  # 20 mm downwards
+    ss.solve()

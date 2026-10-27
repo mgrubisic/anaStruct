@@ -510,6 +510,8 @@ class SystemElements:
             self.loads_q.pop(element_id)
         if element_id in self.loads_dead_load:
             self.loads_dead_load.remove(element_id)
+        if element_id in self.loads_temperature:
+            self.loads_temperature.pop(element_id)
         if element_id in self.non_linear_elements:
             self.non_linear_elements.pop(element_id)
 
@@ -767,6 +769,17 @@ class SystemElements:
                 q_perp=[location_q_perp_load, q_perp_load_end],
             )
 
+        # Copy the thermal load from the old element to the new elements (the free
+        # strain and curvature are uniform over the element)
+        if element_id_to_split in self.loads_temperature:
+            for new_element_id in (element_id1, element_id2):
+                self.loads_temperature[new_element_id] = self.loads_temperature[
+                    element_id_to_split
+                ]
+                self.element_map[new_element_id].temperature_load = (
+                    self.loads_temperature[element_id_to_split]
+                )
+
         # Remove the old element from everywhere it's referenced
         self.remove_element(element_id_to_split)
 
@@ -1018,12 +1031,8 @@ class SystemElements:
         ss = copy.copy(self)
         system_components.assembly.prep_matrix_forces(ss)
         assert ss.system_force_vector is not None
-        assert (
-            np.abs(ss.system_force_vector).sum() != 0
-            or any(
-                displacement != 0
-                for displacement in ss._prescribed_displacements.values()
-            )
+        assert np.abs(ss.system_force_vector).sum() != 0 or any(
+            displacement != 0 for displacement in ss._prescribed_displacements.values()
         ), "There are no forces on the structure"
         ss._remainder_indexes = []
         system_components.assembly.assemble_system_matrix(ss)
@@ -1391,7 +1400,9 @@ class SystemElements:
         conventions follow the corresponding loads: `ux` acts like a positive `Fx` point
         load, `uy` like a positive `Fy` point load (with the default `invert_y_loads=True`
         a positive `uy` is downwards) and `phi_z` like a positive `Tz` moment load.
-        Unlike loads, imposed displacements are not multiplied by the `load_factor`.
+        Like the loads, imposed displacements are multiplied by the `load_factor`, so
+        that they can be superposed in a :class:`.LoadCombination` (see
+        :meth:`.LoadCase.imposed_displacement`).
 
         Calling this method again for the same node overrides only the components that
         are passed; components left as `None` keep their previously imposed value. Pass
@@ -1408,28 +1419,49 @@ class SystemElements:
 
         Raises:
             FEMException: If no displacement or rotation is imposed at all
+            FEMException: If the system has already been solved, if the node is an
+                inclined roller support, or if a rotation is imposed on an internal
+                hinge
             FEMException: If the degree of freedom is not restrained by a support
                 (raised when solving)
 
         Note:
             Impose the displacements before the first `solve()`, just like supports.
-            Imposed displacements are not transferred by `discretize()` or
-            `insert_node()`. For inclined roller supports the imposed values act in
-            the global directions, not along the inclined axes.
+            Imposed displacements are carried over by `discretize()`. Imposed
+            displacements on inclined roller supports are not supported.
         """
         if ux is None and uy is None and phi_z is None:
             raise FEMException(
                 "Invalid parameters",
                 "Impose at least one of ux, uy or phi_z.",
             )
+        if self.system_displacement_vector is not None:
+            raise FEMException(
+                "Invalid parameters",
+                "Imposed displacements must be applied before the system is solved.",
+            )
         id_ = _negative_index_to_id(node_id, self.node_map.keys())
+        if id_ in self.inclined_roll:
+            raise FEMException(
+                "Invalid parameters",
+                "Imposed displacements on inclined roller supports are not supported.",
+            )
+        if phi_z is not None and self.node_map[id_] in self.internal_hinges:
+            raise FEMException(
+                "Invalid parameters",
+                "A rotation cannot be imposed on an internal hinge.",
+            )
         prev_ux, prev_uy, prev_phi_z = self.loads_displacement.get(
             id_, (None, None, None)
         )
         self.loads_displacement[id_] = (
-            ux if ux is not None else prev_ux,
-            (uy * self.orientation_cs) if uy is not None else prev_uy,
-            phi_z if phi_z is not None else prev_phi_z,
+            ux * self.load_factor if ux is not None else prev_ux,
+            (
+                (uy * self.orientation_cs * self.load_factor)
+                if uy is not None
+                else prev_uy
+            ),
+            phi_z * self.load_factor if phi_z is not None else prev_phi_z,
         )
 
     def thermal_load(
@@ -1450,7 +1482,11 @@ class SystemElements:
         gradient corresponds to a warmer upper face (the face pointing towards the
         positive global y-direction for a horizontal element), so that a cantilever
         fixed at its first node deflects downwards (positive `uy` with the default
-        `invert_y_loads=True`).
+        `invert_y_loads=True`). In general the warmer face is the face on the left
+        of the element when looking from its first to its second node. Elements that
+        are not vertical are oriented from left to right, so this is their upper
+        face; for vertical elements it depends on the order in which the end points
+        were entered.
 
         Args:
             element_id (Union[int, Sequence[int]]): The element ID to which to apply the load
@@ -1468,11 +1504,17 @@ class SystemElements:
             FEMException: If `delta_t_gradient` is set without a valid section depth `h`
 
         Note:
-            Thermal loads are not removed by `remove_loads()` and are not transferred
-            by `discretize()` or `insert_node()`. The element result curves
+            Calling this method again for an element replaces its previous thermal
+            load (like `q_load`); give the uniform change and the gradient in one call.
+            Thermal loads are removed by `remove_loads()` and are carried over by
+            `discretize()` and `insert_node()`. The element result curves
             `deflection` and `extension` (relative to the element chord) do not
             include the free thermal curvature and strain; nodal displacements,
             reactions and the internal force diagrams are exact.
+            The equivalent nodal forces use the stiffness matrix of the element, so
+            for elements with an end hinge or spring (`spring=`) they are only as
+            accurate as that matrix; a hinged support (`add_support_hinged()`) is
+            handled exactly.
         """
         n_elems = len(element_id) if isinstance(element_id, Sequence) else 1
         element_id = arg_to_list(element_id, n_elems)
@@ -2416,6 +2458,16 @@ class SystemElements:
                 q_perp=[i[0] / self.load_factor for i in forces_q],
             )
 
+        # the thermal load (free strain and curvature) is uniform over the element
+        for element_id, temperature_load in self.loads_temperature.items():
+            for sub_element_id in range((element_id - 1) * n + 1, element_id * n + 1):
+                ss.loads_temperature[sub_element_id] = temperature_load
+                ss.element_map[sub_element_id].temperature_load = temperature_load
+
+        # imposed displacements are stored with the load factor and orientation applied
+        for node_id, displacement in self.loads_displacement.items():
+            ss.loads_displacement[(node_id - 1) * n + 1] = displacement
+
         self.__dict__ = ss.__dict__.copy()
 
     def remove_loads(self, dead_load: bool = False) -> None:
@@ -2427,9 +2479,19 @@ class SystemElements:
         self.loads_point = {}
         self.loads_q = {}
         self.loads_moment = {}
+        self.loads_temperature = {}
+
+        # release the imposed displacements; the restrained degrees of freedom
+        # return to zero
+        if self.system_displacement_vector is not None:
+            for index in self._prescribed_displacements:
+                self.system_displacement_vector[index] = 0.0
+        self.loads_displacement = {}
+        self._prescribed_displacements = {}
 
         for k in self.element_map:  # pylint: disable=consider-using-dict-items
             self.element_map[k].q_load = (0.0, 0.0)
+            self.element_map[k].temperature_load = (0.0, 0.0)
             if dead_load:
                 self.element_map[k].dead_load = 0
         if dead_load:

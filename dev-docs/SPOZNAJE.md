@@ -143,3 +143,28 @@ diff -u /tmp/anastruct_orig/anaStruct-master/anastruct/fem/system.py anastruct/f
 Diff je namjerno minimalan: 6 postojećih datoteka dirnuto, 0 izbrisane linije
 logike (osim 3 linije nuliranja pomaka u `reaction_forces`), sve ostalo su
 dodaci.
+
+## Review nalazi (Sonnet 5.5 + Opus 5.5, naknadni pregled)
+
+- **Testovi:** u ovom okruženju (pytest-describe 3.1.0) `context_*` funkcije
+  postaju samostalni testovi, a ugniježđeni `it_*` se nikad ne izvrše. Prvotnih
+  13 testova zato nije provjeravalo asercije; testovi su prepisani u obične
+  `test_*` funkcije (svi prolaze). Isti obrazac koriste i upstream testovi
+  (`tests/test_analytical.py` itd.) — njihove asercije se također ne izvršavaju.
+- **Predznaci potvrđeni:** pozitivan `uy` = prema dolje (kao pozitivan `Fy` uz
+  `invert_y_loads=True`); pozitivan gradijent = toplije gornje lice (vrh konzole
+  ide dolje). Pozor: `node_map[i].uy` je u obrnutom okviru od
+  `get_node_results_system()`; fizikalni smjer čitati iz potonjeg
+  (y prema gore) ili iz `get_node_displacements()` (y prema dolje).
+- **Ispravljeno:** dvostruko brojanje zadanog pomaka u `LoadCombination`
+  (`LoadCase.imposed_displacement` + faktor), pad u `insert_node` nakon
+  `thermal_load`, tihi gubitak opterećenja u `discretize()`/`remove_loads()`,
+  tihi no-op `imposed_displacement` nakon `solve()`, kosi valjkasti oslonac i
+  rotacija na unutarnjem zglobu (sada `FEMException`).
+- **Poznato, naslijeđeno iz upstreama (nije mijenjano):** matrica krutosti
+  elementa s krajnjim zglobom/oprugom (`spring=`) daje 4EI/l umjesto 3EI/l, pa
+  su i toplinske ekvivalentne sile za takve elemente približne; `det_linear_buckling`
+  i `solve(geometrical_non_linear=True)` imaju neovisne probleme.
+- Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
+  zakrivljenost/istezanje (dokumentirano u docstringu).
+

@@ -51,8 +51,8 @@ print(ss.reaction_forces[2].Fy)
 | `anastruct/fem/system_components/assembly.py` | `apply_temperature_load()` (registered in `prep_matrix_forces`), prescribed-DOF handling in `process_supports()`, `K_fr @ u_r` correction in `process_conditions()` |
 | `anastruct/fem/elements.py` | Element attribute `temperature_load`, summed in `Element.__add__` |
 | `anastruct/fem/postprocess.py` | `reaction_forces()` keeps the (possibly imposed) support displacements instead of zeroing them |
-| `anastruct/fem/util/load.py` | `LoadCase.thermal_load()` |
-| `tests/test_imposed_thermal.py` | 13 tests, all verified against analytical solutions |
+| `anastruct/fem/util/load.py` | `LoadCase.thermal_load()`, `LoadCase.imposed_displacement()` |
+| `tests/test_imposed_thermal.py` | 30 plain test functions, verified against analytical solutions (incl. load combinations, model edits, sign conventions) |
 | `examples/ex_27_imposed_displacement.py` | Settlement + imposed rotation |
 | `examples/ex_28_thermal_load.py` | Uniform dT + gradient, restrained and free |
 | `examples/ex_29_thermal_loadcombination.py` | Thermal loads in `LoadCase`/`LoadCombination` |
@@ -60,7 +60,7 @@ print(ss.reaction_forces[2].Fy)
 ## Running tests
 
 ```bash
-python -m pytest                          # whole suite (224 tests)
+python -m pytest                          # whole suite (241 tests)
 python -m pytest tests/test_imposed_thermal.py -v   # new tests only
 ```
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from functools import lru_cache
 from math import cos, sin
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 
@@ -87,7 +87,7 @@ class Element:
         self.dead_load: float = 0.0
         # (alpha * delta_t, alpha * delta_t_gradient / h): free thermal strain and
         # curvature of the element
-        self.temperature_load: tuple = (0.0, 0.0)
+        self.temperature_load: Tuple[float, float] = (0.0, 0.0)
         self.N_1: Optional[float] = None
         self.N_2: Optional[float] = None
         self.bending_moment: Optional[np.ndarray] = None

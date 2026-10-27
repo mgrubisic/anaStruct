@@ -94,6 +94,33 @@ class LoadCase:
         self.c += 1
         self.spec[f"dead_load-{self.c}"] = {"element_id": element_id, "g": g}
 
+    def imposed_displacement(
+        self,
+        node_id: int,
+        ux: Optional[float] = None,
+        uy: Optional[float] = None,
+        phi_z: Optional[float] = None,
+    ) -> None:
+        """
+        Apply an imposed displacement (support settlement) and/or rotation to a node.
+
+        The imposed values are multiplied by the load factor of the load combination,
+        so a settlement belongs to a single load case and is not counted again in the
+        other cases.
+
+        :param node_id: (int) representing the node ID
+        :param ux: (flt) Imposed displacement in the global x direction
+        :param uy: (flt) Imposed displacement in the global y direction
+        :param phi_z: (flt) Imposed rotation about the global z-axis in radians
+        """
+        self.c += 1
+        self.spec[f"imposed_displacement-{self.c}"] = {
+            "node_id": node_id,
+            "ux": ux,
+            "uy": uy,
+            "phi_z": phi_z,
+        }
+
     def thermal_load(
         self,
         element_id: Union[int, Sequence[int]],

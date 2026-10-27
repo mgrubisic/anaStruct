@@ -86,20 +86,34 @@ comb.add_load_case(lc_g, factor=1.0)
 results = comb.solve(ss)   # dict per load case + "combination"
 ```
 
-Imposed displacements are deliberately **not** part of `LoadCase` — they are a
-support condition of the system, not a load. They are carried into every load
-case of a `LoadCombination` unchanged (never factored).
+Imposed displacements are available in a `LoadCase` as well:
+`lc.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)`. They are
+multiplied by the load factor of their load case, so a settlement is counted
+once and superposes correctly. A settlement set directly on the base system is
+copied into every load case of a `LoadCombination` (like any other base-system
+load), so put it in a `LoadCase`.
 
 See `examples/ex_29_thermal_loadcombination.py`.
 
 ## 4. Known limitations (by design decision)
 
-- `remove_loads()` does **not** clear thermal loads; `discretize()` and
-  `insert_node()` do **not** transfer thermal loads or imposed displacements
-  to the new mesh.
+- `remove_loads()` removes thermal loads and imposed displacements;
+  `discretize()` and `insert_node()` carry thermal loads (and, for
+  `discretize()`, imposed displacements) over to the new mesh.
+- Imposed displacements must be set before the first `solve()` (otherwise a
+  `FEMException` is raised) and are not supported on inclined roller supports
+  or as a rotation on an internal hinge.
+- `thermal_load()` on an element replaces its earlier thermal load (like
+  `q_load`): give the uniform change and the gradient in one call.
+- Positive gradient = warmer face on the left when looking from node 1 to
+  node 2 (the upper face for non-vertical elements; for vertical elements it
+  depends on the entry order).
+- Thermal fixed-end forces use the element stiffness matrix, which is only
+  approximate for element end hinges/springs (`spring=`), as it is for
+  mechanical loads; hinged supports are exact.
 - No plotting support for either feature yet (plots of loads don't show them;
   result plots like `show_bending_moment()` are correct).
 - Element result curves `deflection`/`extension` (relative to the element
   chord) exclude the free thermal curvature/strain. Nodal displacements,
   reactions and M/N/V diagrams are exact.
-- No Sphinx docs entries yet (`docs/source/loads.rst`, `supports.rst`).
+- Sphinx entries: `docs/source/loads.rst` and `docs/source/supports.rst`.

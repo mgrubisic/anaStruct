@@ -16,7 +16,8 @@ types on top of upstream anaStruct, verified against analytical solutions in
 `tests/test_imposed_thermal.py`:
 
 * **Imposed displacements/rotations of supports** (support settlement):
-  `ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)`
+  `ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)` — also available in
+  `LoadCase`/`LoadCombination` as `lc.imposed_displacement(...)`
 * **Thermal loads on elements** (uniform temperature change and linear temperature
   gradient over the section depth):
   `ss.thermal_load(element_id, delta_t, alpha, delta_t_gradient=None, h=None)` —
