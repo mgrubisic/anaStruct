@@ -1495,8 +1495,11 @@ class SystemElements:
             FEMException: If the system has already been solved, if the node is an
                 inclined roller support, or if a rotation is imposed on an internal
                 hinge
-            FEMException: If the degree of freedom is not restrained by a support
-                (raised when solving)
+            FEMException: If the degree of freedom is not restrained by a support (raised when
+                solving). A displacement can only be imposed in a direction that a support restrains:
+                not in the free direction of a roller, not for the rotation of a hinged support, and
+                not for an inclined roller, which restrains only the translation normal to its free
+                direction. The message explains which of these applies.
 
         Note:
             Impose the displacements before the first `solve()`, just like supports.
@@ -1517,7 +1520,9 @@ class SystemElements:
         if id_ in self.inclined_roll:
             raise FEMException(
                 "Invalid parameters",
-                "Imposed displacements on inclined roller supports are not supported.",
+                system_components.util.describe_unrestrained_dof(
+                    self, id_, 1 if ux is not None else 2 if uy is not None else 3
+                ),
             )
         if phi_z is not None and any(hinge.id == id_ for hinge in self.internal_hinges):
             raise FEMException(

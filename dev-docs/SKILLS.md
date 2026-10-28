@@ -106,8 +106,14 @@ See `examples/ex_29_thermal_loadcombination.py`.
   `discretize()` and `insert_node()` carry thermal loads (and, for
   `discretize()`, imposed displacements) over to the new mesh.
 - Imposed displacements must be set before the first `solve()` (otherwise a
-  `FEMException` is raised) and are not supported on inclined roller supports
-  or as a rotation on an internal hinge.
+  `FEMException` is raised).
+- A displacement can only be imposed in a direction that a support **restrains**: not in
+  the free direction of a roller, not as a rotation at a hinged support or an internal
+  hinge, not at a spring support and not at a node without a support. An inclined roller
+  restrains only the translation normal to its free direction, while `ux`/`uy` are global,
+  so they can not be imposed there. A `FEMException` is raised (at `solve()`, and at
+  `imposed_displacement()` for an inclined roller) whose message explains which support
+  restrains what (`describe_unrestrained_dof` in `system_components/util.py`).
 - `thermal_load()` on an element replaces its earlier thermal load (like
   `q_load`): give the uniform change and the gradient in one call.
 - Positive gradient = warmer face on the left when looking from node 1 to

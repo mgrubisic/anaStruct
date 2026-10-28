@@ -122,9 +122,13 @@ Ostale kvarkije:
   ne obustavljeni! `direction="x"` (default) → obustavlja `uy`.
 - `add_support_roll(node_id=[2,3])` pada na assertu jer se `direction/angle/rotate`
   ne broadcastaju — ili liste za sve, ili zasebni pozivi.
-- Zadani pomaci (`imposed_displacement`) na čvoru s kosim valjkastim osloncem nisu
-  podržani (`FEMException`): ne zna se koja komponenta zadanog globalnog pomaka se
-  odnosi na ograničeni smjer oslonca.
+- Zadani pomak je teorijski moguć samo u smjeru koji oslonac **sprječava**: u slobodnom
+  smjeru se čvor pomiče kako konstrukcija zahtijeva, pa je pomak rezultat, a ne uvjet.
+  Zato nije moguć u slobodnom smjeru kotljača, za rotaciju zglobnog oslonca, na opružnom
+  osloncu ni u čvoru bez oslonca. Kosi valjkasti oslonac sprječava samo translaciju
+  okomito na slobodni smjer, a zadani `ux`/`uy` su globalni (imaju komponentu u slobodnom
+  smjeru) pa se na njemu ne mogu zadati. U svim tim slučajevima baca se `FEMException`
+  s porukom koja objašnjava što koji oslonac sprječava (`describe_unrestrained_dof`).
 - `invert_y_loads=False`: `q_load(direction="x")` i `point_load(rotation=...)` ne prate
   istu konvenciju kao uz zadanu vrijednost (naslijeđeno iz upstreama, nije mijenjano).
 

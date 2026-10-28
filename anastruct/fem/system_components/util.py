@@ -58,6 +58,96 @@ def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
     node.hinge = is_hinge
 
 
+def describe_unrestrained_dof(
+    system: "SystemElements", node_id: int, direction: int
+) -> str:
+    """Explain why an imposed displacement of a node can not be applied
+
+    A displacement can only be imposed in a direction that a support restrains: in a free
+    direction the node moves as the structure requires, so its displacement is a result, not
+    a condition. This is the case for the free direction of a roller (sliding support), the
+    rotation of a hinged support, a spring support (which yields), and above all for an
+    inclined roller, which restrains only the translation normal to its free direction while
+    the imposed ux and uy are in the global directions.
+
+    Args:
+        system (SystemElements): System in which the node is located
+        node_id (int): Id of the node
+        direction (int): The degree of freedom: 1 = ux, 2 = uy, 3 = phi_z
+
+    Returns:
+        str: The explanation, with what the support at the node does restrain
+    """
+    names = {1: "ux", 2: "uy", 3: "phi_z"}
+    translations = {1: "x", 2: "y"}
+    name = names[direction]
+    message = f"An imposed {name} at node {node_id} is not possible: "
+
+    if node_id in system.inclined_roll:
+        # the free direction has the angle `angle`, the restrained one is normal to it
+        angle = -float(np.degrees(system.inclined_roll[node_id]))
+        return (
+            message
+            + f"the node has an inclined roller support. It is free to move along the "
+            f"direction of {angle:g} degrees and restrains only the translation in the "
+            f"direction of {angle + 90:g} degrees, normal to it. A displacement can only be "
+            "imposed in a direction that a support restrains; the global ux and uy have a "
+            "component along the free direction, which can not be imposed (the node moves "
+            "there as the structure requires)."
+        )
+
+    for node, direction_i, rotate in zip(
+        system.supports_roll,
+        system.supports_roll_direction,
+        system.supports_roll_rotate,
+    ):
+        if node.id == node_id:
+            free = translations[1 if direction_i == 2 else 2]
+            return (
+                message
+                + f"the node has a roller support that is free to move in the {free} "
+                f"direction (it restrains the {translations[direction_i]} translation"
+                + (" and the rotation" if not rotate else "")
+                + "). A displacement can only be imposed in a direction that a support "
+                "restrains."
+            )
+
+    if any(node.id == node_id for node in system.supports_hinged):
+        return (
+            message
+            + "the node has a hinged support, which restrains the translations but not "
+            "the rotation. A displacement can only be imposed in a direction that a "
+            "support restrains."
+        )
+
+    if any(node.id == node_id for node in system.supports_rotational):
+        return (
+            message
+            + "the node has a rotational support, which restrains only the rotation. A "
+            "displacement can only be imposed in a direction that a support restrains."
+        )
+
+    for supports in (
+        system.supports_spring_x,
+        system.supports_spring_y,
+        system.supports_spring_z,
+    ):
+        if any(node.id == node_id for node, _ in supports):
+            return (
+                message
+                + "the node has a spring support, which yields instead of restraining. A "
+                "displacement can only be imposed in a direction that a rigid support "
+                "restrains."
+            )
+
+    return (
+        message
+        + "no support restrains that degree of freedom of the node. A displacement can "
+        "only be imposed in a direction that a support restrains (fixed, hinged, roller or "
+        "rotational support), and the support must be added to the system."
+    )
+
+
 def append_node_id(
     system: "SystemElements",
     point_1: Vertex,

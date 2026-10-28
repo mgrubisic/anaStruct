@@ -107,7 +107,16 @@ Inclined roller supports
 
 A roll support with an :code:`angle` is inclined: the support is free in the direction of the angle (relative to the
 global x-axis) and restrains the translation normal to it. Loads can be placed at the node of an inclined roller. The
-reaction of the support is normal to the free direction. Imposed displacements are not possible at such a node.
+reaction of the support is normal to the free direction.
+
+An imposed displacement is possible only in a direction that a support restrains: in a free direction the node moves as
+the structure requires, so its displacement is a result and can not be a condition. That is why a displacement can not
+be imposed in the free direction of a roller, for the rotation of a hinged support, at a spring support (which yields),
+or at a node without a support. An inclined roller restrains only the translation normal to its free direction, while
+the imposed :code:`ux` and :code:`uy` are in the global directions and have a component along the free direction, so
+imposing them on an inclined roller is not possible either. In all these cases :code:`solve` (or
+:code:`imposed_displacement` for an inclined roller) raises a :code:`FEMException` whose message explains which support
+restrains what.
 
 Changing the model after a calculation
 ######################################

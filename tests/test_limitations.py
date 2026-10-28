@@ -554,3 +554,89 @@ def test_combination_counts_the_loads_of_the_system_once():
     assert combined.get_node_displacements(2)["uy"] == approx(
         direct.get_node_displacements(2)["uy"]
     )
+
+
+# ---------------------------------------------------------------------------
+# imposed displacements in a direction that no support restrains
+# ---------------------------------------------------------------------------
+
+
+def fixed_beam():
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [10, 0]])
+    system.add_support_fixed(1)
+    return system
+
+
+def message_of(action):
+    with raises(FEMException) as error:
+        action()
+    return error.value.message
+
+
+def test_imposed_displacement_in_the_free_direction_of_a_roller_explains_why():
+    def action():
+        system = fixed_beam()
+        system.add_support_roll(2, "x")
+        system.imposed_displacement(2, ux=0.01)
+        system.solve()
+
+    message = message_of(action)
+    assert "imposed ux at node 2" in message
+    assert "roller support that is free to move in the x direction" in message
+    assert "restrains the y translation" in message
+
+
+def test_imposed_rotation_at_a_hinged_support_explains_why():
+    def action():
+        system = fixed_beam()
+        system.add_support_hinged(2)
+        system.imposed_displacement(2, phi_z=0.01)
+        system.solve()
+
+    message = message_of(action)
+    assert "imposed phi_z at node 2" in message
+    assert "hinged support" in message and "not the rotation" in message
+
+
+def test_imposed_displacement_on_an_inclined_roller_explains_the_restrained_direction():
+    def action():
+        system = fixed_beam()
+        system.add_support_roll(2, angle=30)
+        system.imposed_displacement(2, uy=0.01)
+
+    message = message_of(action)
+    assert "imposed uy at node 2" in message
+    assert "inclined roller support" in message
+    assert "direction of 30 degrees" in message  # the free direction
+    assert (
+        "direction of 120 degrees" in message
+    )  # the restrained direction, normal to it
+
+
+def test_inclined_roller_added_after_the_imposed_displacement_is_reported_when_solving():
+    def action():
+        system = fixed_beam()
+        system.imposed_displacement(2, uy=0.01)
+        system.add_support_roll(2, angle=45)
+        system.solve()
+
+    message = message_of(action)
+    assert "imposed uy at node 2" in message
+    assert "inclined roller support" in message
+
+
+def test_imposed_displacement_without_a_support_and_on_a_spring_support():
+    def without_support():
+        system = fixed_beam()
+        system.imposed_displacement(2, uy=0.01)
+        system.solve()
+
+    def with_spring():
+        system = fixed_beam()
+        system.add_support_spring(2, translation=2, k=500.0)
+        system.imposed_displacement(2, uy=0.01)
+        system.solve()
+
+    assert "no support restrains" in message_of(without_support)
+    assert "spring support, which yields" in message_of(with_spring)

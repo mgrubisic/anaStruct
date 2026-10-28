@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, List, Tuple
 import numpy as np
 
 from anastruct.basic import FEMException
+from anastruct.fem.system_components.util import describe_unrestrained_dof
 from anastruct.fem.elements import det_axial, det_moment, det_shear
 
 if TYPE_CHECKING:
@@ -443,7 +444,9 @@ def process_supports(system: "SystemElements") -> None:
         if node_id in system.inclined_roll:
             raise FEMException(
                 "Invalid parameters",
-                f"Imposed displacements on inclined roller support {node_id} are not supported.",
+                describe_unrestrained_dof(
+                    system, node_id, 1 if ux is not None else 2 if uy is not None else 3
+                ),
             )
         if phi_z is not None and any(
             hinge.id == node_id for hinge in system.internal_hinges
@@ -459,8 +462,7 @@ def process_supports(system: "SystemElements") -> None:
             if np.isnan(system.system_displacement_vector[index]):
                 raise FEMException(
                     "StabilityError",
-                    f"An imposed displacement at node {node_id} in direction {direction} "
-                    "requires a support restraining that degree of freedom.",
+                    describe_unrestrained_dof(system, node_id, direction),
                 )
             system.system_displacement_vector[index] = displacement
             system._prescribed_displacements[index] = displacement
