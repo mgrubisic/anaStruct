@@ -17,8 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Read the Docs build
+        env:
+          RTDS_WEBHOOK_TOKEN: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
+          RTDS_WEBHOOK_URL: ${{ secrets.RTDS_WEBHOOK_URL }}
         run: |
-          curl -X POST \
-            -d "branches=${{ github.ref_name }}" \
-            -d "token=${{ secrets.RTDS_WEBHOOK_TOKEN }}" \
-            "${{ secrets.RTDS_WEBHOOK_URL }}"
+          if [[ -z "$RTDS_WEBHOOK_URL" || -z "$RTDS_WEBHOOK_TOKEN" ]]; then
+            echo "::warning::Read the Docs webhook secrets are not configured; skipping the build trigger."
+            exit 0
+          fi
+
+          curl --fail-with-body --silent --show-error --request POST \
+            --data-urlencode "branches=${GITHUB_REF_NAME}" \
+            --data-urlencode "token=${RTDS_WEBHOOK_TOKEN}" \
+            "$RTDS_WEBHOOK_URL"
