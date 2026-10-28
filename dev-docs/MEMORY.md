@@ -12,7 +12,7 @@
 - `LoadCase.thermal_load(...)`, `LoadCase.imposed_displacement(...)` — integracija s LoadCase/LoadCombination
   (faktori kombinacija rade, provjereno).
 - 30 testova u `tests/test_imposed_thermal.py` — analitički verificirani;
-  cijeli suite: **307 passed** (uklj. `tests/test_hinges_springs.py`). VAŽNO: testovi su obične `test_*` funkcije;
+  cijeli suite: **356 passed** (uklj. `tests/test_hinges_springs.py`). VAŽNO: testovi su obične `test_*` funkcije;
   ugniježđeni `describe_/context_/it_` blokovi se u ovom okruženju ne izvršavaju
   (vidi SPOZNAJE.md).
 - `mypy anastruct` — bez novih grešaka (1 preostala je naslijeđena u

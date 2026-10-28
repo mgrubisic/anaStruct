@@ -230,6 +230,20 @@ class Element:
                 stiffness.append(float(self.constitutive_matrix[end][end]) * 1e6)
         return stiffness[0], stiffness[1]
 
+    def refresh_nodes(self, node_map: Dict[int, "Node"]) -> None:
+        """Use the current nodes of the system instead of the copies of the post-processing
+
+        The post-processing replaces the nodes of the element by copies with the results. They
+        also hold the hinge status at that time, which the constitutive matrix depends on.
+
+        Args:
+            node_map (Dict[int, Node]): Nodes of the system
+        """
+        self.node_map = {
+            self.node_id1: node_map[self.node_id1],
+            self.node_id2: node_map[self.node_id2],
+        }
+
     def compile_constitutive_matrix(self, initial: bool = False) -> None:
         """Compile the constitutive matrix of the element"""
         if initial:  # if element is just being created

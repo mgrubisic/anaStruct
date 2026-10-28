@@ -122,13 +122,11 @@ Ostale kvarkije:
   ne obustavljeni! `direction="x"` (default) → obustavlja `uy`.
 - `add_support_roll(node_id=[2,3])` pada na assertu jer se `direction/angle/rotate`
   ne broadcastaju — ili liste za sve, ili zasebni pozivi.
-- `point_load` na čvoru s kosim valjkastim osloncem (kut 90°/180°) je dopušten, ali se
-  opterećenje primjenjuje u zaokrenutom sustavu oslonca (naslijeđeno iz upstreama).
-- `solve(geometrical_non_linear=True)` s nelinearnim elementima (`mp=`) vraća se kroz
-  `stiffness_adaptation` pa je rezultat linearan i `buckling_factor` je `None`
-  (naslijeđeno); `LoadCombination` rješava svaki slučaj posebno u drugom redu i
-  superponira rezultate, pa nema zajedničkog faktora izvijanja ni P-delta učinka
-  kombinacije.
+- Zadani pomaci (`imposed_displacement`) na čvoru s kosim valjkastim osloncem nisu
+  podržani (`FEMException`): ne zna se koja komponenta zadanog globalnog pomaka se
+  odnosi na ograničeni smjer oslonca.
+- `invert_y_loads=False`: `q_load(direction="x")` i `point_load(rotation=...)` ne prate
+  istu konvenciju kao uz zadanu vrijednost (naslijeđeno iz upstreama, nije mijenjano).
 
 ## 5. Zamke na koje se naišlo
 
@@ -256,10 +254,57 @@ dodaci.
   upeti 1973,95 uz n=20), vodoravni i kosi stupovi, portal s krutom gredom, opruga na
   dnu stupa (μL·tan(μL) = kL/EI), zglob na kraju elementa; testovi u
   `tests/test_buckling.py`.
-- **Poznato, naslijeđeno iz upstreama (nije mijenjano):**
-  - `insert_node_old` i `add_element_grid` dijele `spring` rječnike.
-  - Rešetkasti štapovi nemaju savojnu krutost (EI = 1e-14), pa se izvijanje
-    pojedinog štapa rešetke ne modelira.
+- **Ograničenja ispravljena u zadnjem koraku:**
+  1. *Opterećenje na čvoru s kosim valjkastim osloncem.* Stupnjevi slobode takvog čvora su
+     u sustavu oslonca (`u_glob = R(δ) u_oslonca`, δ = `inclined_roll[čvor]`); opterećenje
+     se u `apply_point_load` prebacuje `f_oslonca = R(δ)ᵀ f_glob`, zabrana u `point_load`
+     je uklonjena. Pretvorba čvornih sila elementa u `ElementLevel.node_results` nije
+     bila rotacija (`Fx' = -(cFx + sFy)` umjesto `cFx - sFy`; greška se vidjela samo kad je
+     komponenta sile u slobodnom smjeru ≠ 0, tj. uz opterećenje na čvoru; isto za
+     pomake). Provjera statikom za kutove 30°–225° i −40°, s opterećenjem Fx/Fy.
+  2. *`mp=` + `geometrical_non_linear`.* Prije se `solve` vraćao kroz `stiffness_adaptation`
+     (prvi red, `buckling_factor=None`). Sada je svaki korak plastične iteracije drugog
+     reda (`second_order_step`: prvi red → N0 → `K + Kg(N0)`); faktor izvijanja je onaj
+     elastične konstrukcije.
+  3. *`LoadCombination` + drugi red / nelinearni elementi.* Rezultati se ne mogu
+     superponirati; kombinacija je sada jedan račun sustava sa zbrojem opterećenja svih
+     slučajeva (`_add_loads`: točkasta, momentna, linijska — i trapezna i pod kutom —,
+     toplinska i zadani pomaci, svako s faktorom) i ima vlastiti `buckling_factor`.
+     Linearna kombinacija je i dalje superpozicija.
+  4. *Izvijanje štapa rešetke.* `truss` element nema savojnu krutost; štap se modelira
+     općim elementom sa zglobovima na oba kraja (`spring={1: 0, 2: 0}`, ponaša se kao
+     štap), a `discretize` ga dijeli sa zglobovima samo na krajevima. Euler: 493,48 (štap),
+     8723,59 (dvoštapna rešetka). Geometrijska matrica `truss` elementa je matrica žice.
+  5. *Izmjene modela nakon `solve`.* `process_supports` se izvršavao samo jednom: oslonac
+     dodan nakon rješavanja se tiho zanemarivao, a `insert_node`/`add_element` su bacali
+     `IndexError`. `_invalidate_solution()` (poziva se iz `add_element`, `remove_element`,
+     `add_support_*`, `add_internal_hinge`) resetira vektor pomaka, masku upetih stupnjeva i
+     plastično stanje, pa sljedeći `solve` obrađuje izmijenjeni model.
+  6. *Dijeljeni `spring`/`mp` rječnici* (`add_multiple_elements`, `add_element_grid`,
+     `insert_node_old`): `add_element` kopira rječnike.
+- **Nalazi neovisnog pregleda tog koraka (ispravljeno):**
+  - *Zglob dodan nakon `solve`* (`add_internal_hinge`) ponašao se kao upetost: kopije čvorova
+    u `element.node_map` (postprocesiranje) nose status zgloba iz zadnjeg `solve`, a
+    `compile_constitutive_matrix` ih čita. `Element.refresh_nodes` se poziva iz
+    `_invalidate_solution` i `process_supports`; `add_internal_hinge` prvo provjerava zglob pa
+    poništava rješenje.
+  - *`force_linear=True` + `geometrical_non_linear=True`* s `mp=` je davao plastični rezultat:
+    unutarnji `solve()` pozivi sada primaju `force_linear=True`.
+  - *Ponovljeni računi s `mp=`:* faktor izvijanja je bio drukčiji pri drugom pozivu (plastično
+    reducirane matrice djeljene s kopijom za izvijanje), a plastična iteracija je kretala od
+    reducirane krutosti (pomak ~0,1 %). Faktor izvijanja se računa s elastičnom krutošću
+    (elementi se nakon toga vraćaju), a svaka plastična iteracija kreće od elastičnog stanja.
+  - *Nekonvergencija plastične iteracije* je vraćala zastarjele ili miješane rezultate uz
+    upozorenje u logu; sada je to `FEMException("ConvergenceError", ...)` (mehanizam).
+  - *`LoadCombination`:* linearna i nelinearna kombinacija su različito brojile opterećenja
+    sustava (n puta naspram jednom). Sada su oba puta jedan račun sa zbrojem opterećenja
+    (isto kao superpozicija za linearni račun), opterećenja sustava se broje jednom.
+  - `buckling_factor` se briše pri izmjeni modela; `second_order_step` prvo vraća krutost
+    bez starog `Kg`.
+- **Poznato, naslijeđeno iz upstreama (nije mijenjano):** vidi popis "Ostale kvarkije"
+  u sekciji 4; geometrijska matrica plastično reduciranog zgloba je približna;
+  `add_multiple_elements(..., spring={1: 0, 2: 0})` daje svakom podelementu oba otpuštanja;
+  `loads_q` kombinacije (samo za crtanje) sadrži zadnji slučaj.
 - Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
   zakrivljenost/istezanje (dokumentirano u docstringu).
 

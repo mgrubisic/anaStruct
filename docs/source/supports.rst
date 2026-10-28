@@ -100,3 +100,18 @@ Example
     ss.add_support_roll(2)
     ss.imposed_displacement(node_id=2, uy=-0.02)  # 20 mm downwards (uy is positive upwards, like Fy)
     ss.solve()
+
+
+Inclined roller supports
+########################
+
+A roll support with an :code:`angle` is inclined: the support is free in the direction of the angle (relative to the
+global x-axis) and restrains the translation normal to it. Loads can be placed at the node of an inclined roller. The
+reaction of the support is normal to the free direction. Imposed displacements are not possible at such a node.
+
+Changing the model after a calculation
+######################################
+
+Supports, elements and internal hinges can be added after a calculation (and :code:`insert_node` and
+:code:`remove_element` can be used). The solution is then reset, so that the next :code:`solve` processes the changed
+model.

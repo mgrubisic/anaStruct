@@ -164,10 +164,12 @@ class ElementLevel:
                 Fy = node.Fy
                 ux = node.ux
                 uy = node.uy
-                node.Fy = c * Fy + s * Fx
-                node.Fx = -(c * Fx + s * Fy)
-                node.ux = c * ux + s * uy
-                node.uy = c * uy + s * ux
+                # from the system of the support to the global system: R(angle), the
+                # inverse of the transformation of the loads and the kinematic matrix
+                node.Fx = c * Fx - s * Fy
+                node.Fy = s * Fx + c * Fy
+                node.ux = c * ux - s * uy
+                node.uy = s * ux + c * uy
 
     @staticmethod
     def determine_axial_force(element: "Element", con: int) -> None:

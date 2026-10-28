@@ -109,6 +109,14 @@ def apply_point_load(system: "SystemElements") -> None:
     """
     for node_id in system.loads_point:
         Fx, Fy = system.loads_point[node_id]
+        if node_id in system.inclined_roll:
+            # The degrees of freedom of a node with an inclined roller support are in the
+            # system of the support, rotated by delta with respect to the global system
+            # (u_global = R(delta) u_support, see the kinematic matrix), so the load
+            # is given in that system as well: f_support = R(delta)^T f_global.
+            delta = system.inclined_roll[node_id]
+            cos_d, sin_d = math.cos(delta), math.sin(delta)
+            Fx, Fy = cos_d * Fx + sin_d * Fy, -sin_d * Fx + cos_d * Fy
         # system force vector.
         set_force_vector(
             system,
@@ -399,6 +407,8 @@ def process_supports(system: "SystemElements") -> None:
     for node in system.internal_hinges:
         set_displacement_vector(system, [(node.id, 3)])
         for el in system.node_element_map[node.id]:
+            # the node copies of the post-processing hold the hinge status of an earlier solve
+            el.refresh_nodes(system.node_map)
             el.compile_constitutive_matrix()
             el.compile_stiffness_matrix()
 

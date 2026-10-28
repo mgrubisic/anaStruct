@@ -1,5 +1,6 @@
 import copy
 import logging
+import math
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -11,15 +12,55 @@ if TYPE_CHECKING:
     from anastruct.fem.system import SystemElements
 
 
+def second_order_step(system: "SystemElements") -> None:
+    """
+    One linear step of a second order analysis with the current stiffness of the elements
+    (which may be reduced by plastic hinges): a first order solution gives the normal
+    forces N0, the geometric stiffness for N0 is added to the elements and the system
+    is solved again, (K + Kg(N0)) u = F. The results stay on the system, without the
+    post-processing.
+
+    :param system: (SystemElements)
+    """
+    for el in system.element_map.values():
+        el.compile_stiffness_matrix()  # the plastic reduction stays, the old Kg goes
+    system.solve(True, naked=True)
+    system.post_processor.node_results_elements()
+    for el in system.element_map.values():
+        el.N_1 = math.sin(el.angle) * el.node_1.Fy - math.cos(el.angle) * el.node_1.Fx
+        el.compile_geometric_non_linear_stiffness_matrix()
+    system.solve(True, naked=True)
+
+
 def stiffness_adaptation(
-    system: "SystemElements", verbosity: int, max_iter: int
+    system: "SystemElements",
+    verbosity: int,
+    max_iter: int,
+    geometrical_non_linear: bool = False,
 ) -> np.ndarray:
     """
     Non linear solver for the nodes by adapting the stiffness of the elements (nodes).
 
+    :param geometrical_non_linear: (bool) Every step of the iteration is a second order
+                                   analysis, see :func:`second_order_step`.
     :return: Vector with displacements.
     """
-    system.solve(True, naked=True)
+
+    def solve_step() -> None:
+        if geometrical_non_linear:
+            second_order_step(system)
+        else:
+            system.solve(True, naked=True)
+
+    # start from the elastic stiffness: the plastic reduction of an earlier calculation
+    # would otherwise be the starting point of this one
+    for el in system.element_map.values():
+        el.nodes_plastic = [False, False]
+        el.refresh_nodes(system.node_map)
+        el.compile_constitutive_matrix()
+        el.compile_stiffness_matrix()
+
+    solve_step()
     if verbosity == 0:
         logging.info("Starting stiffness adaptation calculation.")
 
@@ -57,7 +98,7 @@ def stiffness_adaptation(
                     el.update_stiffness(factor, node_no)
 
         if not np.allclose(factors, 1, 1e-3):
-            system.solve(force_linear=True, naked=True)
+            solve_step()
         else:
             system.post_processor.node_results_elements()
             system.post_processor.node_results_system()
@@ -66,11 +107,20 @@ def stiffness_adaptation(
             break
         iteration += 1
 
+    if geometrical_non_linear:
+        # the results are second order; the elements go back to the first order stiffness
+        for el in system.element_map.values():
+            el.compile_stiffness_matrix()
+
     if iteration >= max_iter:
-        logging.warning(
-            f"Couldn't solve the in the amount of iterations given. max_iter={max_iter}"
+        # the iteration of the last step has no post-processed results, and the results of
+        # an earlier calculation must not be mistaken for them
+        raise FEMException(
+            "ConvergenceError",
+            f"The plastic iteration did not converge in max_iter={max_iter} iterations. "
+            "The structure may be a mechanism: check the plastic moments (mp) and the loads.",
         )
-    elif verbosity == 0:
+    if verbosity == 0:
         logging.info(f"Solved in {iteration} iterations")
 
     assert system.system_displacement_vector is not None
@@ -151,7 +201,7 @@ def det_linear_buckling(system: "SystemElements") -> float:
     # may still hold the geometric stiffness of an earlier second order calculation.
     for el in system.element_map.values():
         el.compile_stiffness_matrix()
-    system.solve()
+    system.solve(force_linear=True)  # also for non linear (plastic) elements
     free = list(system._remainder_indexes)
     k0 = np.array(system.reduced_system_matrix)  # copy
 
@@ -167,6 +217,40 @@ def det_linear_buckling(system: "SystemElements") -> float:
         el.compile_stiffness_matrix()
 
     return smallest_buckling_factor(k0, kg)
+
+
+def determine_buckling_factor(
+    system: "SystemElements", discretize_kwargs: Optional[dict] = None
+) -> float:
+    """
+    Determine the buckling factor of the (elastic) structure for its loads.
+
+    :param system: (SystemElements)
+    :param discretize_kwargs: (dict) Containing the kwargs passed to the discretize function
+    :return: The factor the loads can be increased until the structure fails due to buckling.
+    """
+    buckling_system = copy.copy(system)
+    if discretize_kwargs is not None:
+        buckling_system.discretize(**discretize_kwargs)
+
+    # the elements may be shared with the system, and hold the plastic reduction of an
+    # earlier calculation: use the elastic stiffness, and restore the elements afterwards
+    states = [
+        (el, el.constitutive_matrix, list(el.nodes_plastic))
+        for el in buckling_system.element_map.values()
+    ]
+    try:
+        for el, _, _ in states:
+            el.nodes_plastic = [False, False]
+            el.refresh_nodes(buckling_system.node_map)
+            el.compile_constitutive_matrix()
+            el.compile_stiffness_matrix()
+        return det_linear_buckling(buckling_system)
+    finally:
+        for el, constitutive, nodes_plastic in states:
+            el.constitutive_matrix = constitutive
+            el.nodes_plastic = nodes_plastic
+            el.compile_stiffness_matrix()
 
 
 def geometrically_non_linear(
@@ -191,23 +275,19 @@ def geometrically_non_linear(
 
     buckling_factor: Optional[float] = None
     if return_buckling_factor:
-        buckling_system = copy.copy(system)
-        if discretize_kwargs is not None:
-            buckling_system.discretize(**discretize_kwargs)
-
-        buckling_factor = det_linear_buckling(buckling_system)
+        buckling_factor = determine_buckling_factor(system, discretize_kwargs)
 
     # first order analysis: the normal forces N0 (back to the first order stiffness,
     # the elements may hold the geometric stiffness of an earlier calculation)
     for el in system.element_map.values():
         el.compile_stiffness_matrix()
-    system.solve()
+    system.solve(force_linear=True)
 
     # second order analysis
     for el in system.element_map.values():
         el.compile_geometric_non_linear_stiffness_matrix()
 
-    system.solve()
+    system.solve(force_linear=True)
 
     # the results are second order; the elements go back to the first order stiffness, so
     # that a next (linear) calculation, or another second order calculation, starts from it

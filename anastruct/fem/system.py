@@ -196,6 +196,27 @@ class SystemElements:
         self.reduced_system_matrix: Optional[np.ndarray] = None
         self._vertices: Dict[Vertex, int] = {}  # maps vertices to node ids
 
+    def _invalidate_solution(self) -> None:
+        """A change of the model (supports, elements) makes the solution out of date.
+
+        The supports are processed once, at the first solve, and the displacement vector holds
+        the solution of the previous calculation. After a solve both are reset, so that the
+        next solve processes the supports of the changed model, and the elements start with
+        their elastic stiffness again.
+        """
+        if self.system_displacement_vector is None:
+            return
+        self.system_displacement_vector = None
+        self._restrained_dofs = None
+        self._prescribed_displacements = {}
+        self.buckling_factor = None
+        for element in self.element_map.values():
+            element.nodes_plastic = [False, False]
+            # the node copies of the post-processing hold the hinge status of the last solve
+            element.refresh_nodes(self.node_map)
+            element.compile_constitutive_matrix()
+            element.compile_stiffness_matrix()
+
     @property
     def id_last_element(self) -> int:
         """ID of the last element added to the structure
@@ -339,6 +360,14 @@ class SystemElements:
                 The two nodes of the element or the next node of the element.
             EA (Optional[float], optional): Axial stiffness of the new element. Defaults to None.
 
+        Note:
+            A truss element has no bending stiffness, so a bar of a truss does not buckle between
+            its nodes in a second order calculation. To determine the buckling load of a bar,
+            model it as an element with hinges at both ends, `add_element(location, EA=EA, EI=EI,
+            spring={1: 0, 2: 0})`: it behaves like a truss element, and `discretize()` divides it
+            with the hinges at its ends only, see `solve(geometrical_non_linear=True,
+            discretize_kwargs=...)`.
+
         Returns:
             int: ID of the new element
         """
@@ -431,6 +460,8 @@ class SystemElements:
         if element_type == "truss":
             EI = 1e-14
 
+        self._invalidate_solution()
+
         # add the element number
         self.count += 1
 
@@ -501,6 +532,7 @@ class SystemElements:
         Args:
             element_id (int): ID of the element to remove
         """
+        self._invalidate_solution()
         element = self.element_map[element_id]
         node_id1 = element.node_id1
         node_id2 = element.node_id2
@@ -915,8 +947,11 @@ class SystemElements:
             force_linear (bool, optional): Force a linear calculation, even when the system has non-linear nodes.
                 Defaults to False.
             verbosity (int, optional): Log calculation outputs (0), or silence (1). Defaults to 0.
-            max_iter (int, optional): Maximum allowed iterations. Defaults to 200.
+            max_iter (int, optional): Maximum allowed iterations of the plastic iteration of non-linear nodes.
+                A FEMException is raised if it does not converge (the structure may be a mechanism). Defaults to 200.
             geometrical_non_linear (int, optional): Calculate second order effects and determine the buckling factor.
+                This can be combined with non linear nodes (`mp=`): every step of the plastic iteration is then
+                a second order analysis, and the buckling factor is that of the elastic structure.
                 Defaults to False.
 
         Optional Keyword Args:
@@ -963,8 +998,15 @@ class SystemElements:
         ), "There are no forces on the structure"
 
         if self.non_linear and not force_linear:
+            if geometrical_non_linear:
+                # the buckling factor is that of the elastic structure
+                self.buckling_factor = (
+                    system_components.solver.determine_buckling_factor(
+                        self, kwargs.get("discretize_kwargs", None)
+                    )
+                )
             return system_components.solver.stiffness_adaptation(
-                self, verbosity, max_iter
+                self, verbosity, max_iter, bool(geometrical_non_linear)
             )
 
         system_components.assembly.assemble_system_matrix(self)
@@ -1071,6 +1113,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_hinged.append(self.node_map[id_])
+            self._invalidate_solution()
 
     def add_support_rotational(self, node_id: Union[int, Sequence[int]]) -> None:
         """Model a rotational support at a given node.
@@ -1086,6 +1129,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_rotational.append(self.node_map[id_])
+            self._invalidate_solution()
 
     def add_internal_hinge(self, node_id: Union[int, Sequence[int]]) -> None:
         """Model a internal hinge at a given node.
@@ -1105,6 +1149,7 @@ class SystemElements:
             # the node is a hinge from now on, also when no element is released
             self._explicit_internal_hinges.add(id_)
             system_components.util.check_internal_hinges(self, id_)
+            self._invalidate_solution()
 
     def add_support_roll(
         self,
@@ -1157,6 +1202,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_roll.append(self.node_map[id_])
+            self._invalidate_solution()
             self.supports_roll_direction.append(direction_i)
             self.supports_roll_rotate.append(rotate_)
 
@@ -1180,6 +1226,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_fixed.append(self.node_map[id_])
+            self._invalidate_solution()
 
     def add_support_spring(
         self,
@@ -1208,6 +1255,7 @@ class SystemElements:
         else:
             resolved_node_id = _negative_index_to_id(node_id, self.node_map.keys())
         self.supports_spring_args.append((resolved_node_id, translation, k, roll))
+        self._invalidate_solution()
         # The stiffness of the spring is added in the system matrix at the location that
         # represents the node and the displacement.
         if not isinstance(node_id, collections.abc.Iterable):
@@ -1360,8 +1408,10 @@ class SystemElements:
             rotation (Union[float, Sequence[float]], optional): Rotate the force clockwise by the given
                 angle in degrees. Defaults to 0.0.
 
-        Raises:
-            FEMException: Point loads may not be placed at the location of inclined roller supports
+        Note:
+            The load may be placed at the node of an inclined roller support: the degrees of
+            freedom of that node are in the system of the support, and the load is transformed to
+            it when solving. The reaction of such a roller is normal to its free direction.
         """
         if isinstance(Fy, (int, float)) and Fy == 0.0 and Fz is not None:
             Fy = Fz  # for backwards compatibility with old y/z axes behaviour
@@ -1373,14 +1423,6 @@ class SystemElements:
 
         for i, node_idi in enumerate(node_id):
             id_ = _negative_index_to_id(node_idi, self.node_map.keys())
-            if (
-                id_ in self.inclined_roll
-                and np.mod(self.inclined_roll[id_], np.pi / 2) != 0
-            ):
-                raise FEMException(
-                    "StabilityError",
-                    "Point loads may not be placed at the location of inclined roller supports",
-                )
             self.plotter.max_system_point_load = max(
                 self.plotter.max_system_point_load, (Fx[i] ** 2 + Fy[i] ** 2) ** 0.5
             )
