@@ -192,13 +192,24 @@ def _add_loads(
         base_element = base.element_map[element_id]
         target_element = target.element_map[element_id]
 
+        # a dead load of the case is added to the self-weight of the element
+        added_dead_load = element.dead_load - base_element.dead_load
+        if added_dead_load != 0:
+            target_element.dead_load += added_dead_load
+            target.loads_dead_load.add(element_id)
+
         # distributed loads, perpendicular and parallel to the element; the self-weight
         # is part of both properties, so it is counted once, in the base system
+        # (a dead load of the case was added above, so it is not part of the added q-loads)
+        dead_perp = added_dead_load * math.cos(target_element.angle)
+        dead_par = -added_dead_load * math.sin(target_element.angle)
         added_perp = [
-            a - b for a, b in zip(element.all_qp_load, base_element.all_qp_load)
+            _clean(a - b - dead_perp)
+            for a, b in zip(element.all_qp_load, base_element.all_qp_load)
         ]
         added_par = [
-            a - b for a, b in zip(element.all_qn_load, base_element.all_qn_load)
+            _clean(a - b - dead_par)
+            for a, b in zip(element.all_qn_load, base_element.all_qn_load)
         ]
         if any(value != 0 for value in added_perp + added_par):
             if target_element.q_load == (0.0, 0.0) and target_element.q_perp_load == (
@@ -350,7 +361,7 @@ class LoadCombination:
         # they replace the loads of the system at the same node or element)
         unloaded = copy.deepcopy(system)
         unloaded._invalidate_solution()
-        unloaded.remove_loads()
+        unloaded.remove_loads(dead_load=True)
         for lc, factor in self.spec.values():
             ss = copy.deepcopy(unloaded)
             ss.load_factor = factor

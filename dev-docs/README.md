@@ -64,7 +64,7 @@ print(ss.reaction_forces[2].Fy)
 | File | Change |
 |---|---|
 | `anastruct/fem/system.py` | Imposed displacements and thermal loads; `discretize()`, `insert_node()`, `remove_loads()` rewritten/extended; `_invalidate_solution()`, `_reset_plastic_state()`; plastic + second order in `solve()`; internal-hinge bookkeeping |
-| `anastruct/fem/elements.py` | `constitutive_matrix()` (condensation), `end_rotational_stiffness`, geometric stiffness (`geometric_stiffness_matrix`, releases, truss), `refresh_nodes()` |
+| `anastruct/fem/elements.py` | `constitutive_matrix()` (condensation), `end_rotational_stiffness`, geometric stiffness (`geometric_stiffness_matrix`, releases, truss), `refresh_nodes()`, plastic hinge as series spring (`plastic_stiffness`, `update_stiffness`, `reset_plastic`) |
 | `anastruct/fem/system_components/assembly.py` | `apply_temperature_load()`, prescribed displacements, inclined-roller loads, hinge/truss moment checks, restrained-DOF mask |
 | `anastruct/fem/system_components/solver.py` | `smallest_buckling_factor()`, `det_linear_buckling()`, `second_order_step()`, plastic iteration |
 | `anastruct/fem/system_components/util.py` | `check_internal_hinges()`, `describe_unrestrained_dof()` |
@@ -76,13 +76,14 @@ print(ss.reaction_forces[2].Fy)
 | `tests/test_discretize_internal_hinges.py` | 29 tests: internal-hinge detection, `discretize()` against the original model |
 | `tests/test_buckling.py` | 22 tests: buckling factor against Euler columns, frames, springs, hinges, repeated solves |
 | `tests/test_limitations.py` | 72 tests: inclined rollers, bar buckling, plastic hinges in second order, combinations, model edits after a solve, review findings |
+| `tests/test_inherited_fixes.py` | 41 tests: plastic hinge as a series spring, node-id gaps, `LoadCase.dead_load`, `validate()` before `solve()`, zero-length element, infinite spring, float64 vertices, `invert_y_loads=False` |
 | `tests/test_upstream_examples.py` | 6 tests: upstream examples whose nested tests are not run by pytest-describe, with corrected expectations |
 | `examples/ex_27..29` | Settlement + rotation; thermal loads; thermal loads in a load combination |
 
 ## Running tests
 
 ```bash
-MPLBACKEND=Agg python -m pytest           # whole suite (391 tests)
+MPLBACKEND=Agg python -m pytest           # whole suite (430 tests)
 python -m pytest tests/test_imposed_thermal.py -v   # one file
 ```
 

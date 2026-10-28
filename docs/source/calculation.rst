@@ -59,6 +59,11 @@ A second order calculation can be combined with non linear nodes (:code:`mp=`): 
 plastic moments is a second order analysis, so the compression increases the moments and the displacements while the
 moments at the plastic hinges stay at the plastic moment. The buckling factor is that of the elastic structure.
 
+A plastic hinge is a rotational spring in series with the element (and with a rotational spring given by the
+user). Its stiffness is iterated with the secant :code:`k = k * mp / |M|`, so the end moment converges to the
+plastic moment and the moment is redistributed exactly. A hinge that is unloaded below :code:`mp` becomes elastic
+again. If the plastic hinges turn the structure into a mechanism a :code:`FEMException` is raised.
+
 Buckling of a bar of a truss
 ............................
 

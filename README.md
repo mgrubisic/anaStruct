@@ -52,7 +52,10 @@ of a system after `discretize()` are not the original ones (use `find_node_id`);
 `reaction_forces[i].ux/uy/phi_z` are the real displacements of the support node; a non
 converging plastic iteration raises a `FEMException`; the `combination` of a `LoadCombination` is one
 calculation with all the loads (the loads of the system itself count once); a positive `Fy`, `q` and
-imposed `uy` act in the +y direction.
+imposed `uy` act in the +y direction; a plastic hinge (`mp=`) is a rotational spring in series with the
+element (exact redistribution); vertex coordinates are `float64` (rounded to 12 significant digits);
+node ids may have gaps after `remove_element`; `LoadCase.dead_load` and `validate()` before the first
+`solve()` work; a zero-length element or a spring with `k=inf` raises a `FEMException`.
 
 To use this fork instead of upstream, install it from GitHub:
 `pip install git+https://github.com/mgrubisic/anaStruct.git`.

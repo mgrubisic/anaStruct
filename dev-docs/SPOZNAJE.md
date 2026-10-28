@@ -131,8 +131,10 @@ Ostale kvarkije:
   okomito na slobodni smjer, a zadani `ux`/`uy` su globalni (imaju komponentu u slobodnom
   smjeru) pa se na njemu ne mogu zadati. U svim tim slučajevima baca se `FEMException`
   s porukom koja objašnjava što koji oslonac sprječava (`describe_unrestrained_dof`).
-- `invert_y_loads=False`: `q_load(direction="x")` i `point_load(rotation=...)` ne prate
-  istu konvenciju kao uz zadanu vrijednost (naslijeđeno iz upstreama, nije mijenjano).
+- `invert_y_loads=False`: `Fy`, `q` (smjer `y`/`element`/`perpendicular`) i `q_perp` djeluju
+  obrnuto, a `Fx` i `q` u smjeru `x`/`parallel` isto kao uz zadanu vrijednost (`q_perp`
+  kod `x`/`parallel` je y-like). `point_load(rotation=...)` koristi pravu rotaciju i za
+  `invert_y_loads=False` (prije su `q_load(direction="x")` i rotacija bili nedosljedni).
 
 ## 5. Zamke na koje se naišlo
 
@@ -309,8 +311,8 @@ su u ovoj datoteci i u korisničkoj dokumentaciji.
   - `buckling_factor` se briše pri izmjeni modela; `second_order_step` prvo vraća krutost
     bez starog `Kg`.
 - **Poznato, naslijeđeno iz upstreama (nije mijenjano):** vidi popis "Ostale kvarkije"
-  u sekciji 4; geometrijska matrica plastično reduciranog zgloba je približna;
-  `add_multiple_elements(..., spring={1: 0, 2: 0})` daje svakom podelementu oba otpuštanja;
+  u sekciji 4; `add_multiple_elements(..., spring={1: 0, 2: 0})` daje svakom podelementu oba
+  otpuštanja;
   `loads_q` kombinacije (samo za crtanje) sadrži zadnji slučaj.
 - Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
   zakrivljenost/istezanje (dokumentirano u docstringu).
@@ -348,18 +350,66 @@ Ispravljeno:
   krutost zgloba 4EI/l i pogrešan niz opruge) provjereni neovisno i izvršivi u
   `tests/test_upstream_examples.py`.
 
-Nasljeđeno iz upstreama, **nije mijenjano** (reproducirano i na upstream kodu):
-- Model plastičnog zgloba (`Element.update_stiffness` skalira članove matrice umjesto serijske
-  opruge) daje odstupanja preraspodjele i rotacija (od nekoliko do ~25 %).
-- `remove_element` ostavlja rupe u ID-jevima čvorova, a `solve` ih koristi kao guste indekse
-  matrice (`IndexError`); `insert_node` nakon uklanjanja može isto.
-- `LoadCase.dead_load` poziva nepostojeću metodu `SystemElements.dead_load`.
-- `validate()` prije prvog `solve()` pada (`AssertionError`), jer oslonci još nisu obrađeni.
-- Elementi nulte duljine (`ZeroDivisionError`), opruga s `k=inf` (`LinAlgError`), `load_factor=0`.
-- `validate()` koristi gustu `np.linalg.eig` (O(n³)); `assert np.any(u < 1e6)` nikad ne pada.
-- Koordinate čvorova su `float32` (`vertex.py`): točnost ~1e-7–1e-5 relativno.
-- `point_load(rotation=...)` ne primjenjuje pravu rotacijsku matricu; `copy.copy` dijeli popise
-  oslonaca s izvornim sustavom.
+## Treći krug: naslijeđeni nedostaci upstreama (ispravljeno) i pregled Copilotovih izmjena
+
+Prvo su pregledane Copilotove izmjene na GitHubu (već spojene u `master`): zaštita RTD
+webhooka kad nema secreta (`copilot/fix-trigger-rtd-job`, workflow) i tipiziranje geometrijske
+matrice krutosti (`mypy`). Obje su ispravne i neovisne o promjenama računa; zadržane su.
+
+Ispravljeno (testovi u `tests/test_inherited_fixes.py`):
+- *Model plastičnog zgloba*: `Element.update_stiffness` je množio članove konstitutivne matrice
+  (nefizikalno: odstupanja preraspodjele i rotacija do ~25 %). Plastični zglob je sada rotacijska
+  opruga **u seriji** s elementom (i s oprugom korisnika; fleksibilnosti se zbrajaju):
+  `plastic_stiffness` po kraju, početak `PLASTIC_INITIAL_STIFFNESS`·4EI/l, secant iteracija
+  `k <- k·mp/|M|`, rasterećenje vraća kraj u elastično stanje (`k > PLASTIC_ELASTIC_STIFFNESS`·4EI/l).
+  Isti mehanizam koriste momenti od `q` (`end_rotational_stiffness`) i geometrijska matrica
+  (`_stiffness_with_releases`, pa je geometrijska matrica plastičnog zgloba sada egzaktna kondenzacija,
+  a ne približna). Mehanizam (singularna matrica) je `FEMException("ConvergenceError", ...)`.
+- *Rupe u ID-jevima čvorova nakon `remove_element`*: `dof_index(system, node_id)` daje gusti
+  indeks stupnja slobode (rječnik `_node_index`, poništava se pri svakoj promjeni čvorova); sva
+  sastavljanja matrice i vektora ga koriste, pa više nema `IndexError`.
+- *`LoadCase.dead_load`* zove sada postojeću metodu `SystemElements.dead_load(element_id, g)`;
+  `remove_loads(dead_load=True)` ne briše više skup `loads_dead_load` (isti skup pokreće i obradu
+  `q`-opterećenja), nego samo postavlja `dead_load = 0`; `LoadCombination` polazi od sustava bez
+  vlastite težine, pa se ona zbraja jednom.
+- *`validate()` prije prvog `solve()`*: obrađuje čvorove (zglobove) i oslonce na kopiji; vraća `True`
+  za oslonjenu, a `False` (+ `StabilityError` u `solve`) za neoslonjenu konstrukciju. Svojstvene
+  vrijednosti su `eigvalsh` na simetriziranoj matrici (prije gusta `eig`), a `assert` na pomake
+  `np.all(|u| < 1e6)` više ne prolazi uvijek.
+- *Koordinate*: `Vertex` je `float64`, zaokružen na 12 značajnih znamenki (`_snap`) da izračunate
+  koordinate (presjeci, `discretize`) i dalje tvore isti čvor; točnost prije ~1e-7.
+- *Element nulte duljine* i *opruga `k=inf`/`nan`/`<0`*: `FEMException` s jasnom porukom
+  (prije `ZeroDivisionError`/`LinAlgError`).
+- *`invert_y_loads=False`*: `q_load(direction="x"/"parallel")`, `q_perp` i `point_load(rotation=...)`
+  su dosljedni (vidi sekciju 4).
+
+Nalazi neovisnog pregleda tog kruga (ispravljeno):
+- *Novi element nakon rupe u ID-jevima* je dobivao postojeći ID čvora (`det_node_ids` je brojio
+  vrhove); sada je ID najveći postojeći + 1.
+- *Kombinacija: slučaj vlastite težine nakon `q`-slučaja na istom elementu* se brojio dvaput
+  (ovisno o redoslijedu slučajeva); dodana vlastita težina se oduzima od dodanih `q`-opterećenja.
+- *Sporija plastična iteracija kad je `mp` malo ispod elastičnog momenta* (stotine do tisuće
+  iteracija, `ConvergenceError`): sekantni korak po fleksibilnosti 1/k opruge
+  (`solver.stiffness_adaptation`, `history`) konvergira za nekoliko iteracija.
+- *`solve` → `remove_element` → `solve`*: oslonci uklonjenog čvora ostajali su u popisima (čvorovi
+  se uspoređivali po identitetu, a `solve` zamjenjuje objekte čvorova); sada se uspoređuje po
+  ID-ju, a brišu se i opruge oslonca (`system_spring_map`) i zadani pomaci uklonjenog čvora.
+- *Plastična iteracija nakon sloma* je mogla vratiti "konvergirani" rezultat mehanizma (krutost zgloba
+  padala bez donje granice, pomaci do 1e282, ravnoteža narušena); sada je krutost zgloba ograničena
+  odozdo (`PLASTIC_MECHANISM_STIFFNESS`·4EI/l → `FEMException("ConvergenceError")`), a kraj koji se
+  vrati u elastično stanje uvijek traži novi račun.
+- *`q_load(rotation=...)` uz `invert_y_loads=False`*: kut se zrcali oko osi x, pa je `rotation=0`
+  isto što i `direction="x"`, a `rotation=90` isto što i `direction="y"` (i za `q_perp`).
+- *`add_node` postojeće točke bez `node_id`* (`UnboundLocalError`); neuspjeli element nulte duljine
+  mijenjao je `_previous_point`; prekoračenje pomaka 1e6 je `FEMException("StabilityError")`
+  umjesto `AssertionError`.
+
+Još uvijek **nije mijenjano** (rubni slučajevi, reproducirani i na upstreamu):
+- `Vertex.__eq__` s `tuple`-om je točna usporedba (bez zaokruživanja); `Element.update_stiffness`
+  zadržava ime, ali sada množi krutost plastičnog zgloba (opruge), a ne članove matrice.
+- `load_factor=0` daje `AssertionError("There are no forces on the structure")` (sva su opterećenja nula).
+- `validate()` radi `copy.copy(self)` (plitko), pa dijeli popise oslonaca s izvornim sustavom; obrada
+  oslonaca na kopiji ne mijenja rezultate, ali ne treba je koristiti za izmjene modela.
 - Krivulje `deflection`/`extension` ne uključuju slobodnu toplinsku zakrivljenost (dokumentirano).
 - Član s zglobovima na oba kraja ne izvija između čvorova bez `discretize_kwargs` (dokumentirano).
-
+- Cython (`celements`) ne koristi plastični zglob ni oslonce, pa promjene ne dira.

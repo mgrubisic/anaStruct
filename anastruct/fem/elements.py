@@ -31,6 +31,15 @@ except ImportError:
 CACHE_BOUND = 32000
 
 
+# A plastic hinge is a rotational spring in series with the element: it starts at this multiple of
+# the rotational stiffness 4 EI / l of the element, and an end that is stiffer than the second
+# multiple is elastic again
+PLASTIC_INITIAL_STIFFNESS = 100.0
+PLASTIC_ELASTIC_STIFFNESS = 1.0e6
+# a plastic hinge softer than this multiple of 4 EI / l makes the structure a mechanism
+PLASTIC_MECHANISM_STIFFNESS = 1.0e-6
+
+
 class Element:
     def __init__(
         self,
@@ -100,6 +109,9 @@ class Element:
         self.max_total_deflection: Optional[float] = None
         self.max_extension: Optional[float] = None
         self.nodes_plastic: List[bool] = [False, False]
+        # rotational stiffness of the plastic hinge at the two ends, in series with the
+        # element (None: the end is elastic)
+        self.plastic_stiffness: List[Optional[float]] = [None, None]
         self.compile_constitutive_matrix(initial=True)
         self.compile_stiffness_matrix()
         self.section_name = section_name  # needed for element annotation
@@ -201,16 +213,48 @@ class Element:
         """Compile the kinematic matrix of the element"""
         self.kinematic_matrix = kinematic_matrix(self.a1, self.a2, self.l)
 
+    def reset_plastic(self) -> None:
+        """Make both ends of the element elastic again (no plastic hinge)"""
+        self.nodes_plastic = [False, False]
+        self.plastic_stiffness = [None, None]
+
+    def _effective_springs(self) -> "Spring":
+        """Rotational springs at the two ends: the springs of the user and the plastic hinges
+
+        A plastic hinge is a rotational spring in series with the element (and with a spring of
+        the user): the flexibilities add. A hinge (stiffness 0) stays a hinge.
+
+        Returns:
+            Spring: The stiffness of the rotational spring of each end that has one
+        """
+
+        def combined(end: Literal[1, 2], plastic: Optional[float]) -> Optional[float]:
+            user = (self.springs or {}).get(end)
+            if user == 0:
+                return 0.0
+            flexibility = (1.0 / user if user else 0.0) + (
+                1.0 / plastic if plastic else 0.0
+            )
+            return 1.0 / flexibility if flexibility > 0 else None
+
+        springs: "Spring" = {}
+        first = combined(1, self.plastic_stiffness[0])
+        second = combined(2, self.plastic_stiffness[1])
+        if first is not None:
+            springs[1] = first
+        if second is not None:
+            springs[2] = second
+        return springs
+
     @property
     def end_rotational_stiffness(self) -> Tuple[float, float]:
         """Rotational stiffness of the connections at the two element ends
 
         These are the stiffnesses that determine the fixed-end forces due to a
         distributed load: 0 for a hinge, the spring stiffness `k` for a rotational
-        spring, and (practically) infinite for a rigid connection. A plastic hinge
-        follows the (reduced) stiffness of the constitutive matrix, so that the
-        end moment converges to the plastic moment. A truss element carries no
-        moment, so both ends are hinges.
+        spring (also the plastic hinge, which is a spring in series), and (practically)
+        infinite for a rigid connection. A truss element carries no moment, so both ends
+        are hinges.
 
         Returns:
             Tuple[float, float]: Rotational stiffness at node 1 and node 2
@@ -218,13 +262,14 @@ class Element:
         if self.type == "truss":
             return 0.0, 0.0
 
+        springs = self._effective_springs()
         stiffness = []
         for end in (1, 2):
             released = self.constitutive_matrix[end][end] == 0
-            spring = self.springs.get(end) if self.springs else None
+            spring = springs.get(end)
             if released:
                 stiffness.append(0.0)
-            elif spring and not self.nodes_plastic[end - 1]:
+            elif spring:
                 stiffness.append(float(spring))
             else:
                 stiffness.append(float(self.constitutive_matrix[end][end]) * 1e6)
@@ -248,33 +293,44 @@ class Element:
         """Compile the constitutive matrix of the element"""
         if initial:  # if element is just being created
             self.constitutive_matrix = constitutive_matrix(
-                self.EA, self.EI, self.l, self.springs, False, False
+                self.EA, self.EI, self.l, self._effective_springs(), False, False
             )
         else:
             self.constitutive_matrix = constitutive_matrix(
                 self.EA,
                 self.EI,
                 self.l,
-                self.springs,
+                self._effective_springs(),
                 self.node_1.hinge,
                 self.node_2.hinge,
             )
 
     def update_stiffness(self, factor: float, node: Literal[1, 2]) -> None:
-        """Update the stiffness matrix of the element
+        """Multiply the stiffness of the plastic hinge at an end of the element with a factor
+
+        The plastic hinge is a rotational spring in series with the element. It starts as a stiff
+        spring (`PLASTIC_INITIAL_STIFFNESS` times the rotational stiffness 4 EI / l of the
+        element) and the iteration of the plastic moment changes it by a factor: a hinge that
+        carries the plastic moment has the secant stiffness mp / (plastic rotation). A spring
+        that becomes stiffer than `PLASTIC_ELASTIC_STIFFNESS` times 4 EI / l makes the end
+        elastic again (unloading).
 
         Args:
-            factor (float): Factor to multiply the stiffness matrix with
+            factor (float): Factor to multiply the stiffness of the plastic hinge with
             node (Literal[1, 2]): Node ID of the node to update (1 or 2)
         """
-        if node == 1:
-            self.constitutive_matrix[1][1] *= factor
-            self.constitutive_matrix[1][2] *= factor
-            self.constitutive_matrix[2][1] *= factor
-        elif node == 2:
-            self.constitutive_matrix[1][2] *= factor
-            self.constitutive_matrix[2][1] *= factor
-            self.constitutive_matrix[2][2] *= factor
+        reference = 4 * self.EI / self.l
+        current = self.plastic_stiffness[node - 1]
+        if current is None:
+            current = PLASTIC_INITIAL_STIFFNESS * reference
+        updated = current * factor
+        if updated > PLASTIC_ELASTIC_STIFFNESS * reference:
+            self.plastic_stiffness[node - 1] = None
+            self.nodes_plastic[node - 1] = False
+        else:
+            self.plastic_stiffness[node - 1] = updated
+            self.nodes_plastic[node - 1] = True
+        self.compile_constitutive_matrix()
         self.compile_stiffness_matrix()
 
     def _end_releases(self) -> List[Optional[float]]:
@@ -286,8 +342,10 @@ class Element:
                 rotational spring
         """
 
+        springs = self._effective_springs()
+
         def release(end: Literal[1, 2], hinge: bool) -> Optional[float]:
-            spring = (self.springs or {}).get(end)
+            spring = springs.get(end)
             if hinge or spring == 0:
                 return 0.0
             return float(spring) if spring else None
@@ -366,33 +424,10 @@ class Element:
         )
 
         releases = self._end_releases()
-        if (
-            self.type != "truss"
-            and not any(self.nodes_plastic)
-            and any(release is not None for release in releases)
-        ):
+        if self.type != "truss" and any(release is not None for release in releases):
+            # hinges, springs and plastic hinges: condensed with the elastic stiffness
             self.stiffness_matrix = self._stiffness_with_releases(geometric, releases)
             return
-
-        # The geometric stiffness is derived for the displacement field of the beam
-        # itself. With a plastic reduction the rotation of the beam end differs
-        # from the rotation of the node: the relative end rotations of the beam are
-        # phi_b = G phi, with G = inv(D_beam) D (D = condensed constitutive matrix, which
-        # also contains a plastic reduction), so the geometric stiffness of the
-        # element follows from the displacement field of the beam, u_b = T u.
-        beam = constitutive_matrix(self.EA, self.EI, self.l, None, False, False)
-        transfer = np.linalg.solve(beam[1:, 1:], self.constitutive_matrix[1:, 1:])
-        if not np.allclose(transfer, np.eye(2)):
-            # the node rotations enter the relative rotations with the factors -1
-            # (node 1) and 1 (node 2) of the kinematic matrix
-            rotations = np.zeros((6, 2))
-            rotations[2, 0] = -1.0
-            rotations[5, 1] = 1.0
-            beam_displacement = (
-                np.eye(6)
-                + rotations @ (transfer - np.eye(2)) @ self.kinematic_matrix[1:, :]
-            )
-            geometric = beam_displacement.T @ geometric @ beam_displacement
 
         self.stiffness_matrix += geometric
 
