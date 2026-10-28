@@ -277,16 +277,105 @@ class Element:
             self.constitutive_matrix[2][2] *= factor
         self.compile_stiffness_matrix()
 
+    def _end_releases(self) -> List[Optional[float]]:
+        """Rotational stiffness of the connection at the two element ends
+
+        Returns:
+            List[Optional[float]]: For each end: None for a rigid connection, 0 for a hinge
+                (a hinge node, or a spring with stiffness 0) and the stiffness k of a
+                rotational spring
+        """
+
+        def release(end: Literal[1, 2], hinge: bool) -> Optional[float]:
+            spring = (self.springs or {}).get(end)
+            if hinge or spring == 0:
+                return 0.0
+            return float(spring) if spring else None
+
+        return [
+            release(1, self.node_1.hinge),
+            release(2, self.node_2.hinge),
+        ]
+
+    def _stiffness_with_releases(
+        self, geometric: np.ndarray, releases: List[Optional[float]]
+    ) -> np.ndarray:
+        """Stiffness matrix of the element with the geometric stiffness and released ends
+
+        The beam is connected to the node by a rotational spring (a hinge is a spring with
+        stiffness 0). The rotation of the beam end is an internal degree of freedom, which
+        is eliminated from the sum of the elastic and the geometric stiffness of the beam
+        (static condensation), so that the geometric stiffness is that of the displacement
+        field the released end really has.
+
+        Args:
+            geometric (np.ndarray): Geometric stiffness matrix of the beam
+            releases (List[Optional[float]]): Rotational stiffness of the two ends, see
+                `_end_releases`
+
+        Returns:
+            np.ndarray: Stiffness matrix of the element
+        """
+        beam_stiffness = constitutive_matrix(
+            self.EA, self.EI, self.l, None, False, False
+        )
+        beam = self.kinematic_matrix.T @ beam_stiffness @ self.kinematic_matrix
+        beam = beam + geometric
+
+        rotation_dofs = (2, 5)
+        released_ends = [end for end in (0, 1) if releases[end] is not None]
+        n = 6 + len(released_ends)
+
+        # beam degrees of freedom = node degrees of freedom, with the internal rotations
+        # instead of the node rotations at the released ends
+        transform = np.zeros((6, n))
+        for dof in range(6):
+            if dof not in [rotation_dofs[end] for end in released_ends]:
+                transform[dof, dof] = 1.0
+        for j, end in enumerate(released_ends):
+            transform[rotation_dofs[end], 6 + j] = 1.0
+        stiffness = transform.T @ beam @ transform
+
+        for j, end in enumerate(released_ends):
+            k = releases[end]
+            if k:
+                node_dof, internal_dof = rotation_dofs[end], 6 + j
+                stiffness[node_dof, node_dof] += k
+                stiffness[internal_dof, internal_dof] += k
+                stiffness[node_dof, internal_dof] -= k
+                stiffness[internal_dof, node_dof] -= k
+
+        node_part = stiffness[:6, :6]
+        coupling = stiffness[:6, 6:]
+        internal_part = stiffness[6:, 6:]
+        condensed: np.ndarray = node_part - coupling @ np.linalg.solve(
+            internal_part, coupling.T
+        )
+        return condensed
+
     def compile_geometric_non_linear_stiffness_matrix(self) -> None:
         """Compile the geometric non-linear stiffness matrix of the element"""
         self.compile_stiffness_matrix()
         assert self.N_1 is not None
+        # the geometric stiffness is that of a constant normal force: the mean of the two ends,
+        # so that it does not depend on the direction in which the element was drawn when the
+        # normal force varies (a load in the direction of the element)
+        normal_force = self.N_1 if self.N_2 is None else (self.N_1 + self.N_2) / 2
         geometric = geometric_stiffness_matrix(
-            self.l, self.N_1, self.a1, self.a2, self.angle, self.type == "truss"
+            self.l, normal_force, self.a1, self.a2, self.angle, self.type == "truss"
         )
 
+        releases = self._end_releases()
+        if (
+            self.type != "truss"
+            and not any(self.nodes_plastic)
+            and any(release is not None for release in releases)
+        ):
+            self.stiffness_matrix = self._stiffness_with_releases(geometric, releases)
+            return
+
         # The geometric stiffness is derived for the displacement field of the beam
-        # itself. At a hinge or a rotational spring the rotation of the beam end differs
+        # itself. With a plastic reduction the rotation of the beam end differs
         # from the rotation of the node: the relative end rotations of the beam are
         # phi_b = G phi, with G = inv(D_beam) D (D = condensed constitutive matrix, which
         # also contains a plastic reduction), so the geometric stiffness of the

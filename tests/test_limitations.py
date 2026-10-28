@@ -640,3 +640,322 @@ def test_imposed_displacement_without_a_support_and_on_a_spring_support():
 
     assert "no support restrains" in message_of(without_support)
     assert "spring support, which yields" in message_of(with_spring)
+
+
+# ---------------------------------------------------------------------------
+# findings of the second review
+# ---------------------------------------------------------------------------
+
+
+def test_second_order_solves_of_a_horizontal_column_are_repeatable():
+    # the transverse displacements of a horizontal column are exactly 0: they must not
+    # become restrained degrees of freedom in the second solve
+    def build():
+        system = SystemElements(EI=5.0e3, EA=1.0e5)
+        system.add_multiple_elements([[0, 0], [10, 0]], 10)
+        system.add_support_hinged(1)
+        system.add_support_roll(11, "x")
+        system.point_load(11, Fx=-1)
+        return system
+
+    system = build()
+    factors = []
+    for _ in range(3):
+        system.solve(geometrical_non_linear=True)
+        factors.append(system.buckling_factor)
+    assert np.isfinite(factors[0])
+    assert factors == approx([factors[0]] * 3)
+    assert factors[0] == approx(np.pi**2 * 5.0e3 / 10.0**2, rel=2e-3)
+
+
+def test_linear_calculation_after_a_plastic_one_is_elastic():
+    def build():
+        system = SystemElements(EA=EA, EI=EI)
+        system.add_element([[0, 0], [3, 0]], mp={1: 20.0})
+        system.add_element([[3, 0], [6, 0]], mp={2: 20.0})
+        system.add_support_fixed([1, 3])
+        system.q_load(-10, [1, 2])
+        return system
+
+    plastic = build()
+    plastic.solve()
+    assert abs(plastic.reaction_forces[1].Tz) == approx(20.0, rel=5e-3)
+    plastic.solve(force_linear=True)
+
+    elastic = build()
+    elastic.solve(force_linear=True)
+    assert abs(elastic.reaction_forces[1].Tz) == approx(10 * 6**2 / 12)
+    assert plastic.reaction_forces[1].Tz == approx(elastic.reaction_forces[1].Tz)
+
+
+def test_combination_with_an_imposed_displacement_when_the_system_was_solved():
+    def build():
+        system = chain()
+        system.q_load(-10, [1, 2, 3])
+        return system
+
+    solved = build()
+    solved.solve()
+    settlement = LoadCase("settlement")
+    settlement.imposed_displacement(4, uy=-0.01)
+    combination = LoadCombination("c")
+    combination.add_load_case(settlement, 1.0)
+    combined = combination.solve(solved)["combination"]
+
+    fresh = build()
+    fresh.imposed_displacement(4, uy=-0.01)
+    fresh.solve()
+    assert combined.reaction_forces[1].Fy == approx(fresh.reaction_forces[1].Fy)
+    assert combined.reaction_forces[1].Tz == approx(fresh.reaction_forces[1].Tz)
+
+
+def test_buckling_factor_without_free_degrees_of_freedom_is_infinite():
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [L, 0]])
+    system.add_support_fixed([1, 2])
+    system.q_load(-1, 1)
+    system.solve(geometrical_non_linear=True)
+    assert system.buckling_factor == float("inf")
+
+
+@mark.parametrize("k", [500.0, 5.0e3, 5.0e4])
+def test_buckling_of_one_element_with_a_spring_is_close_to_the_rotational_support(k):
+    # the geometric stiffness of a released end is condensed with the elastic stiffness: one
+    # element per member is within 0.5 % (it was several times too high before)
+    with_spring = SystemElements(EI=5.0e3, EA=EA)
+    with_spring.add_element([[0, 0], [0, 10]], spring={1: k})
+    with_spring.add_support_fixed(1)
+    with_spring.point_load(2, Fy=-1)
+    with_spring.solve(geometrical_non_linear=True)
+
+    with_support = SystemElements(EI=5.0e3, EA=EA)
+    with_support.add_element([[0, 0], [0, 10]])
+    with_support.add_support_hinged(1)
+    with_support.add_support_spring(1, translation=3, k=k)
+    with_support.point_load(2, Fy=-1)
+    with_support.solve(geometrical_non_linear=True)
+
+    assert with_spring.buckling_factor == approx(with_support.buckling_factor, rel=5e-3)
+
+
+def test_plastic_moment_of_zero_is_an_error():
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [L, 0]], mp={1: 0.0})
+    system.add_support_fixed(1)
+    system.add_support_roll(2)
+    system.point_load(2, Fy=-1.0)
+    with raises(AssertionError, match="mp = 0"):
+        system.solve()
+
+
+@mark.parametrize("g", [2.0, -2.0])
+def test_second_order_self_weight_column_does_not_depend_on_the_drawing_direction(g):
+    # the normal force varies along the element: the geometric stiffness uses its mean
+    def build(drawn_up):
+        system = SystemElements(EI=5.0e3, EA=1.0e6)
+        if drawn_up:
+            system.add_element([[0, 0], [0, 10]], g=g)
+            system.add_support_fixed(1)
+        else:
+            system.add_element([[0, 10], [0, 0]], g=g)
+            system.add_support_fixed(2)
+        system.solve(geometrical_non_linear=True, discretize_kwargs={"n": 8})
+        return system.buckling_factor
+
+    up, down = build(True), build(False)
+    assert up == approx(down, rel=1e-6)
+
+
+@mark.parametrize("options", [{}, {"load_factor": 2.0}, {"invert_y_loads": False}])
+def test_insert_node_copies_the_q_load_with_factor_and_orientation(options):
+    def build(split):
+        system = SystemElements(EA=EA, EI=EI, **options)
+        system.add_element([[0, 0], [4, 0]])
+        system.add_support_fixed(1)
+        system.add_support_roll(2)
+        system.q_load([-4, -8], 1)
+        if split:
+            system.insert_node(1, factor=0.3)
+        system.solve()
+        return system
+
+    plain, split = build(False), build(True)
+    for node_id in (1, 2):
+        assert split.reaction_forces[node_id].Fy == approx(
+            plain.reaction_forces[node_id].Fy, rel=1e-5
+        )
+    assert split.reaction_forces[1].Tz == approx(plain.reaction_forces[1].Tz, rel=1e-5)
+
+
+def test_insert_node_keeps_a_truss_element_a_truss():
+    system = SystemElements(EA=1.0e5)
+    system.add_truss_element([[0, 0], [3, 0]])
+    system.add_support_hinged(1)
+    system.add_support_roll(2)
+    system.insert_node(1, factor=0.5)
+    assert {element.type for element in system.element_map.values()} == {"truss"}
+
+
+def test_internal_hinges_stay_consistent_when_hinges_are_added_and_removed():
+    system = SystemElements(EA=EA, EI=EI)
+    for x in range(5):
+        system.add_element([[x * 3, 0], [(x + 1) * 3, 0]])
+    for node_id in (4, 2, 5, 3):
+        system.add_internal_hinge(node_id)
+    assert sorted(h.id for h in system.internal_hinges) == [2, 3, 4, 5]
+    index = system._internal_hinge_index
+    assert all(system.internal_hinges[i].id == node_id for node_id, i in index.items())
+
+    system.remove_element(5)  # the node 6 is removed, the hinge at node 5 stays
+    system.remove_element(4)  # the node 5 is removed with its hinge
+    assert sorted(h.id for h in system.internal_hinges) == [2, 3, 4]
+    index = system._internal_hinge_index
+    assert sorted(index) == [2, 3, 4]
+    assert all(system.internal_hinges[i].id == node_id for node_id, i in index.items())
+
+
+def test_remove_loads_removes_the_perpendicular_q_load():
+    def build():
+        system = SystemElements(EA=EA, EI=EI)
+        system.add_element([[0, 0], [L, 0]])
+        system.add_support_fixed(1)
+        return system
+
+    system = build()
+    system.q_load(q=-5, element_id=1, direction="x", q_perp=-3)
+    system.remove_loads()
+    system.point_load(2, Fy=-1.0)
+    system.solve()
+
+    fresh = build()
+    fresh.point_load(2, Fy=-1.0)
+    fresh.solve()
+    assert system.get_node_displacements(2)["uy"] == approx(
+        fresh.get_node_displacements(2)["uy"]
+    )
+
+
+def test_combination_adds_the_loads_of_the_cases_to_the_loads_of_the_system():
+    def build():
+        system = SystemElements(EA=EA, EI=EI)
+        system.add_element([[0, 0], [4, 0]])
+        system.add_element([[4, 0], [8, 0]])
+        system.add_support_fixed(1)
+        system.add_support_roll(3)
+        system.point_load(2, Fy=-3.0)
+        system.moment_load(2, Tz=2.0)
+        system.imposed_displacement(3, uy=-0.01)
+        return system
+
+    first = LoadCase("first")
+    first.point_load(2, Fy=-1.0)
+    first.moment_load(2, Tz=1.0)
+    first.imposed_displacement(3, uy=-0.005)
+    second = LoadCase("second")
+    second.point_load(2, Fy=-1.0)
+    second.moment_load(2, Tz=1.0)
+    second.imposed_displacement(3, uy=-0.005)
+    combination = LoadCombination("c")
+    combination.add_load_case(first, 1.0)
+    combination.add_load_case(second, 2.0)
+    combined = combination.solve(build())["combination"]
+
+    # the system itself counts once: -3 - 1 - 2, 2 + 1 + 2, -0.01 - 0.005 - 0.01
+    direct = SystemElements(EA=EA, EI=EI)
+    direct.add_element([[0, 0], [4, 0]])
+    direct.add_element([[4, 0], [8, 0]])
+    direct.add_support_fixed(1)
+    direct.add_support_roll(3)
+    direct.point_load(2, Fy=-6.0)
+    direct.moment_load(2, Tz=5.0)
+    direct.imposed_displacement(3, uy=-0.025)
+    direct.solve()
+
+    assert combined.loads_point[2] == approx(direct.loads_point[2])
+    assert combined.reaction_forces[1].Fy == approx(direct.reaction_forces[1].Fy)
+    assert combined.reaction_forces[1].Tz == approx(direct.reaction_forces[1].Tz)
+    assert combined.get_node_displacements(2)["uy"] == approx(
+        direct.get_node_displacements(2)["uy"]
+    )
+
+
+def test_combination_does_not_show_rounding_noise_in_the_q_load():
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [0, 4]])
+    system.add_support_fixed(1)
+    case = LoadCase("q")
+    case.q_load(-1.5, 1)
+    combination = LoadCombination("c")
+    combination.add_load_case(case, 1.0)
+    results = combination.solve(system)
+
+    values = [
+        *results["combination"].get_element_results(1)["q"],
+        *results["combination"].element_map[1].q_load,
+        *results["combination"].element_map[1].q_perp_load,
+    ]
+    assert all(value == 0 or abs(value) > 1e-9 for value in values)
+    assert results["combination"].get_element_results(1)["q"] == approx(
+        results["q"].get_element_results(1)["q"]
+    )
+
+
+@mark.parametrize("support", ["fixed", "spring"])
+def test_supports_added_after_a_solve_are_used(support):
+    def add(system):
+        if support == "fixed":
+            system.add_support_fixed(3)
+        else:
+            system.add_support_spring(3, translation=2, k=500.0)
+
+    expected = chain()
+    add(expected)
+    expected.solve()
+
+    system = chain()
+    system.solve()
+    add(system)
+    system.solve()
+    assert system.reaction_forces[1].Tz == approx(expected.reaction_forces[1].Tz)
+    assert system.reaction_forces[1].Fy == approx(expected.reaction_forces[1].Fy)
+
+
+def test_element_with_a_hinge_added_after_a_solve():
+    def build(solve_first):
+        system = SystemElements(EA=EA, EI=EI)
+        system.add_element([[0, 0], [4, 0]], spring={2: 0})
+        system.add_support_fixed(1)
+        if solve_first:
+            system.point_load(2, Fy=-1.0)
+            system.solve()
+        system.add_element([[4, 0], [8, 0]], spring={1: 0})
+        system.add_support_hinged(3)
+        system.remove_loads()
+        system.q_load(-10, [1, 2])
+        system.solve()
+        return system
+
+    after, before = build(True), build(False)
+    assert after.reaction_forces[1].Fy == approx(before.reaction_forces[1].Fy)
+    assert after.reaction_forces[1].Tz == approx(before.reaction_forces[1].Tz)
+    assert [hinge.id for hinge in after.internal_hinges] == [2]
+
+
+def test_discretize_keeps_the_direction_of_a_q_load_on_an_inclined_element():
+    def build(n=None):
+        system = SystemElements(EA=EA, EI=EI)
+        system.add_element([[0, 0], [5, 3]])
+        system.add_support_fixed(1)
+        system.add_support_hinged(2)
+        system.q_load(-4, 1, direction="x")
+        if n:
+            system.discretize(n)
+        system.solve()
+        return system
+
+    plain, fine = build(), build(4)
+    for point in ([0, 0], [5, 3]):
+        reaction_plain = plain.reaction_forces[plain.find_node_id(point)]
+        reaction_fine = fine.reaction_forces[fine.find_node_id(point)]
+        assert reaction_fine.Fx == approx(reaction_plain.Fx, abs=1e-3)
+        assert reaction_fine.Fy == approx(reaction_plain.Fy, abs=1e-3)

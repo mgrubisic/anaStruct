@@ -1,5 +1,7 @@
 import itertools
 
+import numpy as np
+
 from pytest import approx, mark, raises
 
 from anastruct import SystemElements
@@ -187,22 +189,53 @@ def test_explicit_internal_hinge_is_a_hinge_immediately():
 
 
 def test_explicit_internal_hinge_with_a_third_rigid_element_stays_a_hinge():
-    # a declared hinge releases all the elements, also when three are connected
-    system = SystemElements(EA=EA, EI=EI)
+    # a declared hinge releases all the elements, also when three are connected (a low EA, so
+    # that the load is not carried by the normal force of the column alone)
+    system = SystemElements(EA=1.0e3, EI=EI)
     system.add_element([[0, 0], [L, 0]])
     system.add_element([[L, 0], [2 * L, 0]])
     system.add_element([[L, 0], [L, -L]])
     system.add_internal_hinge(2)
     system.add_support_fixed([1, 3, 4])
-    system.moment_load(2, Tz=10.0)
+    system.point_load(2, Fy=-10.0)
     assert system.node_map[2].hinge
     system.solve()
 
     # (the hinge flag is reset by the post-processing and set again by every solve)
     assert [hinge.id for hinge in system.internal_hinges] == [2]
-    # no moment reaches the supports of the three released elements
-    for point in ([0, 0], [2 * L, 0], [L, -L]):
-        assert reaction(system, point).Tz == approx(0.0, abs=1e-9)
+    # the moment is zero at the hinge end of each of the three released elements; the two
+    # beams carry the load by shear into their supports (the column only by a normal force)
+    for element in system.element_map.values():
+        moments = element.bending_moment
+        at_hinge = moments[0] if element.node_id1 == 2 else moments[-1]
+        assert at_hinge == approx(0.0, abs=1e-6)
+    beams = [system.element_map[1], system.element_map[2]]
+    assert all(np.max(np.abs(beam.bending_moment)) > 0.05 for beam in beams)
+    assert np.max(np.abs(system.element_map[3].bending_moment)) < 1e-3
+
+
+def test_moment_load_at_an_internal_hinge_is_an_error():
+    # no element transfers a moment in a hinge: the load would vanish silently
+    system = SystemElements(EA=EA, EI=EI)
+    system.add_element([[0, 0], [L, 0]])
+    system.add_element([[L, 0], [2 * L, 0]])
+    system.add_support_fixed([1, 3])
+    system.add_internal_hinge(2)
+    system.moment_load(2, Tz=10.0)
+    with raises(FEMException) as error:
+        system.solve()
+    assert "internal hinge" in error.value.message
+
+
+def test_moment_load_at_a_node_with_only_truss_elements_is_an_error():
+    system = SystemElements(EA=EA)
+    system.add_truss_element([[0, 0], [L, 0]])
+    system.add_truss_element([[L, 0], [2 * L, 0]])
+    system.add_support_hinged([1, 3])
+    system.moment_load(2, Tz=10.0)
+    with raises(FEMException) as error:
+        system.solve()
+    assert "truss" in error.value.message
 
 
 def test_insert_node_keeps_the_internal_hinge_of_a_released_node():

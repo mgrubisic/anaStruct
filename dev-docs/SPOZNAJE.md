@@ -35,12 +35,12 @@ implementirane na razini assemblyja.
 
 - `set_displacement_vector()` (assembly.py) obustavljene DOF-ove postavlja na
   **hardkodiranu 0**, slobodni ostaju `NaN`.
-- `process_conditions()` klasificira DOF kao obustavljen ako je
-  `vector[i] == 0` **ili** `i in system._prescribed_displacements`.
-  ⚠️ Ne smije se koristiti `isnan()` za klasifikaciju: `solve()` se poziva
-  više puta (npr. `geometrically_non_linear` u `solver.py`), a nakon prvog
-  solvea vektor sadrži rezultate bez ijednog NaN — sve bi se pogrešno
-  proglasilo obustavljenim.
+- Obustavljeni DOF-ovi se određuju **jednom**, u `process_supports()`, i pamte u
+  `system._restrained_dofs` (maska: `vector == 0` ili zadani pomak); `process_conditions()`
+  koristi tu masku. ⚠️ Vektor pomaka se ne smije čitati nakon `solve()`: sadrži rješenje, a
+  svaki DOF čije je rješenje točno 0 (poprečni pomaci aksijalno opterećenog stupa) izgledao
+  bi obustavljen (to je davalo pogrešan faktor izvijanja pri ponovljenom računu). Isto tako
+  se `_remainder_indexes` resetira pri svakom pozivu.
 - Korekcija reduciranog sustava (udžbenički postupak zadanih pomaka):
   `K_ff · u_f = F_f − K_fr · u_r`, implementirano prije brisanja redaka/stupaca
   preko `np.ix_(_remainder_indexes, prescribed_indexes)`.
@@ -52,8 +52,10 @@ implementirane na razini assemblyja.
   analizu čistog slijeganja — proširen da prolazi kad postoje ne-nula
   prescribed pomaci.
 - `postprocess.reaction_forces()` je ranije na čvorovima oslonaca hardkodirao
-  `ux=uy=phi_z=0` — uklonjeno da se vidi zadani pomak (za obične oslonce
-  vrijednosti i dalje ispadaju ~0).
+  `ux=uy=phi_z=0` — uklonjeno da se vidi zadani pomak. ⚠️ Posljedica (promjena prema
+  upstreamu): `reaction_forces[i].ux/uy/phi_z` su sada stvarni pomaci čvora, pa su ne-nula i
+  u slobodnim smjerovima oslonaca (npr. rotacija zglobnog oslonca, pomak kotljača u slobodnom
+  smjeru), dok su prije uvijek bili 0.
 
 ## 3. Thermal load — izvod ekvivalentnih čvornih sila
 
@@ -142,29 +144,30 @@ Ostale kvarkije:
    jer `solve()` odmah poslije radi `el.reset()` + svježi `prep_matrix_forces`.
    Isto pravilo vrijedi i za novi `apply_temperature_load` — zato je bitno da
    se sve primary-force izmjene događaju kroz taj isti tok.
-3. **`process_supports` se izvršava samo jednom** (kad je
-   `system_displacement_vector is None`). Podršci i imposed pomaci zadani nakon
-   prvog solvea se ne primjenjuju — isto ponašanje kao i za postojeće oslonce;
-   dokumentirano u docstringu.
+3. **`process_supports` se izvršava kad je `system_displacement_vector is None`**, tj.
+   pri prvom `solve` i nakon svake izmjene modela: `_invalidate_solution()` (poziva se iz
+   `add_element`, `remove_element`, `add_support_*`, `add_internal_hinge`) resetira vektor,
+   masku upetih stupnjeva, zadane pomake i plastično stanje. Zadani pomak se može zadati samo
+   dok rješenje ne postoji (inače `FEMException`).
 4. **`LoadCase` exec-mehanika** (`apply_load_case`): spec dict se stringificira
    pa se execa `self.<metoda>(kwargs)` — radi samo sa skalarnim/None/list
    argumentima. Zato `LoadCase.thermal_load` čuva čiste skalare.
-5. **`Element.__add__`** (za LoadCombination) zbraja rezultate i q-loadove;
-   `temperature_load` dodan u zbrajanje radi konzistentnosti.
+5. **`Element.__add__`, `Node.__add__`, `Node.add_results`** se više ne koriste u biblioteci
+   (kombinacija je jedan račun, `_add_loads`); ostavljeni su zbog kompatibilnosti API-ja
+   (`Element.__add__` zbraja i `temperature_load`).
 
 ## 6. Reproducibilni diff prema upstreamu
 
-Original je u `anaStruct-master (1).zip`. Točan skup izmjena:
+Posljednji upstream commit prije forka je `f85d14a`:
 
 ```bash
-mkdir -p /tmp/anastruct_orig && unzip -oq "anaStruct-master (1).zip" -d /tmp/anastruct_orig
-diff -u /tmp/anastruct_orig/anaStruct-master/anastruct/fem/system.py anastruct/fem/system.py
-# (isto za elements.py, postprocess.py, util/load.py, system_components/assembly.py)
+git diff f85d14a --stat
+git diff f85d14a -- anastruct/fem/system.py
 ```
 
-Diff je namjerno minimalan: 6 postojećih datoteka dirnuto, 0 izbrisane linije
-logike (osim 3 linije nuliranja pomaka u `reaction_forces`), sve ostalo su
-dodaci.
+Fork je značajno veći od prve verzije (dodaci + ispravci opisani u ovoj datoteci): oko 12
+izvornih datoteka i 6 novih testnih datoteka; sve promjene ponašanja prema upstreamu navedene
+su u ovoj datoteci i u korisničkoj dokumentaciji.
 
 ## Review nalazi (Sonnet 5.5 + Opus 5.5, naknadni pregled)
 
@@ -311,4 +314,52 @@ dodaci.
   `loads_q` kombinacije (samo za crtanje) sadrži zadnji slučaj.
 - Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
   zakrivljenost/istezanje (dokumentirano u docstringu).
+
+## Drugi neovisni pregled (Sonnet 5.5 + Opus 5.5 nad cijelim forkom)
+
+Ispravljeno:
+- *Plastično stanje curilo je u kasniji `force_linear` račun* (i u `LoadCombination`): linearni
+  račun sada uvijek kreće od elastične krutosti (`_reset_plastic_state`).
+- *`LoadCombination` + zadani pomak kad je osnovni sustav već riješen*: kopije se poništavaju
+  (`_invalidate_solution`).
+- *`smallest_buckling_factor` bez slobodnih stupnjeva*: `inf`.
+- *Geometrijska matrica zglobova/opruga*: sada se zbroj elastične i geometrijske krutosti grede
+  kondenzira zajedno (rotacija kraja grede je unutarnji stupanj slobode, opruga k ili zglob 0);
+  jedan element po članu je unutar ~0,2 % (prije do 8,6× previsok faktor), konvergira s
+  `discretize`. Statička kondenzacija na razini prvog reda ne može uhvatiti oblik izvijanja
+  koji koristi sam unutarnji stupanj (član sa zglobovima na oba kraja je žica dok se ne podijeli).
+- *Geometrijska matrica koristi srednji N* (`(N_1 + N_2)/2`), pa ne ovisi o smjeru crtanja
+  elementa pri promjenjivoj aksijalnoj sili (vlastita težina).
+- *`insert_node` q-opterećenje*: ponovna primjena `-q_load` udvostručavala je faktor opterećenja
+  i okretala predznak uz `invert_y_loads=False`, a rešetka je postajala opći element; sada se
+  pohranjene vrijednosti kopiraju izravno.
+- *`mp=0`* se tiho tretirao kao elastično (provjera je iterirala ključeve): `AssertionError`.
+- *Moment na unutarnjem zglobu ili na čvoru samo s rešetkom* nestajao je bez poruke: `FEMException`.
+- *`remove_loads` nije brisao `q_perp_load`*.
+- *`ConvergenceError`* kaže da se `max_iter` može povećati (nije nužno mehanizam).
+- *Kombinacija*: opterećenja slučajeva se **dodaju** opterećenjima sustava (jedan slučaj po
+  čvoru/elementu ne oduzima opterećenje sustava više puta); prvi q-slučaj na elementu zadržava
+  svoj rastav; šum 1e-17 se zaokružuje na 0.
+- *`check_internal_hinges`*: popis zglobova je O(1) po čvoru (rječnik `_internal_hinge_index`);
+  prije je svaki poziv gradio popis iznova.
+- *Testovi*: horizontalni stup riješen više puta (maska upetih DOF-ova), mutacijski nezaštićene
+  grane (oslonci `fixed`/`spring` nakon solvea, apsorpcija osnovnih momenata i pomaka u
+  kombinaciji, smjer q pri `discretize`); upstream primjeri 4 i 7 (zastarjela očekivanja: stara
+  krutost zgloba 4EI/l i pogrešan niz opruge) provjereni neovisno i izvršivi u
+  `tests/test_upstream_examples.py`.
+
+Nasljeđeno iz upstreama, **nije mijenjano** (reproducirano i na upstream kodu):
+- Model plastičnog zgloba (`Element.update_stiffness` skalira članove matrice umjesto serijske
+  opruge) daje odstupanja preraspodjele i rotacija (od nekoliko do ~25 %).
+- `remove_element` ostavlja rupe u ID-jevima čvorova, a `solve` ih koristi kao guste indekse
+  matrice (`IndexError`); `insert_node` nakon uklanjanja može isto.
+- `LoadCase.dead_load` poziva nepostojeću metodu `SystemElements.dead_load`.
+- `validate()` prije prvog `solve()` pada (`AssertionError`), jer oslonci još nisu obrađeni.
+- Elementi nulte duljine (`ZeroDivisionError`), opruga s `k=inf` (`LinAlgError`), `load_factor=0`.
+- `validate()` koristi gustu `np.linalg.eig` (O(n³)); `assert np.any(u < 1e6)` nikad ne pada.
+- Koordinate čvorova su `float32` (`vertex.py`): točnost ~1e-7–1e-5 relativno.
+- `point_load(rotation=...)` ne primjenjuje pravu rotacijsku matricu; `copy.copy` dijeli popise
+  oslonaca s izvornim sustavom.
+- Krivulje `deflection`/`extension` ne uključuju slobodnu toplinsku zakrivljenost (dokumentirano).
+- Član s zglobovima na oba kraja ne izvija između čvorova bez `discretize_kwargs` (dokumentirano).
 

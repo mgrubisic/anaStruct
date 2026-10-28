@@ -37,7 +37,8 @@ mode; if no compressive normal force acts on the free degrees of freedom the buc
 (:code:`float("inf")`).
 
 The geometric stiffness matrix of a cubic beam element is an approximation, so the factor is found from above and
-converges with the number of elements: one element gives :math:`12 EI/L^2` for a column pinned at both ends, 20 elements
+converges with the number of elements (at the end of an element with a hinge or a rotational spring the stiffness is
+condensed together with the geometric stiffness, so one element per member is within a few tenths of a percent): one element gives :math:`12 EI/L^2` for a column pinned at both ends, 20 elements
 the Euler load :math:`\pi^2 EI/L^2` within 0.01 %. Hinges and rotational springs at the ends of an element (see
 :ref:`End releases <end-releases>`) are accounted for.
 

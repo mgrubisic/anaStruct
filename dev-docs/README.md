@@ -1,15 +1,31 @@
-# anaStruct fork — imposed displacements & thermal loads
+# anaStruct fork — notes for developers
 
-This folder documents the two features added on top of upstream
-[anaStruct](https://github.com/mgrubisic/anaStruct) in this working copy:
+This folder documents the changes of this fork
+([mgrubisic/anaStruct](https://github.com/mgrubisic/anaStruct)) on top of upstream
+[anaStruct](https://github.com/ritchie46/anaStruct). The diff against upstream is
+`git diff f85d14a` (the last upstream commit before the fork's first commit).
+
+Main additions:
 
 1. **Imposed displacements/rotations of supports** (support settlement) —
-   `SystemElements.imposed_displacement()`
-2. **Thermal loads on elements** (uniform temperature change + linear gradient
-   over the section depth) — `SystemElements.thermal_load()`, also available in
-   `LoadCase`/`LoadCombination`
+   `SystemElements.imposed_displacement()`, also `LoadCase.imposed_displacement()`.
+2. **Thermal loads on elements** (uniform temperature change + linear gradient over the
+   section depth) — `SystemElements.thermal_load()`, also available in
+   `LoadCase`/`LoadCombination`.
 
-Both follow the existing architecture of the package (loads stored in
+and corrections of existing behaviour (each described in `SPOZNAJE.md`):
+
+3. Exact stiffness of element end hinges and rotational springs (static condensation, springs
+   in series) for all loads, with the matching fixed-end moments of distributed loads.
+4. Detection of internal hinges that does not depend on the order of the elements; `discretize()`
+   that works for any model.
+5. Buckling factor and second order analysis (eigenvalue problem, geometric stiffness matrix,
+   inclined supports, hinges and springs, plastic hinges, `LoadCombination`).
+6. Loads on nodes with an inclined roller support; changes of the model after a solve;
+   `LoadCombination` as one calculation; explanatory errors for imposed displacements in a
+   direction that no support restrains.
+
+Both main features follow the existing architecture of the package (loads stored in
 `loads_*` dicts on the system, processed to equivalent nodal loads in
 `anastruct/fem/system_components/assembly.py`, post-processed through the
 standard pipeline).
@@ -38,39 +54,42 @@ print(ss.reaction_forces[2].Fy)
 
 | File | Language | Contents |
 |---|---|---|
-| `README.md` (this file) | EN | Feature overview and map of the change set |
+| `README.md` (this file) | EN | Overview and map of the change set |
 | `SKILLS.md` | EN | Usage recipes: API patterns, expected analytical values, examples |
 | `MEMORY.md` | HR | Session state: what was done, which decisions were made, what remains open |
-| `SPOZNAJE.md` | HR | Technical insights: architecture map, sign conventions, pitfalls, derivation |
+| `SPOZNAJE.md` | HR | Technical insights: architecture map, sign conventions, pitfalls, derivations, reviews |
 
-## Change set (diff vs. upstream `anaStruct-master (1).zip`)
+## Change set (since upstream `f85d14a`)
 
 | File | Change |
 |---|---|
-| `anastruct/fem/system.py` | Storage (`loads_displacement`, `loads_temperature`, `_prescribed_displacements`), methods `imposed_displacement()` + `thermal_load()`, prescribed-DOF scatter in `solve()`, `validate()` accepts load-free settlement analyses |
-| `anastruct/fem/system_components/assembly.py` | `apply_temperature_load()` (registered in `prep_matrix_forces`), prescribed-DOF handling in `process_supports()`, `K_fr @ u_r` correction in `process_conditions()` |
-| `anastruct/fem/elements.py` | Element attribute `temperature_load`, summed in `Element.__add__`; `constitutive_matrix()` rewritten: exact static condensation of hinges and rotational springs in series (fixes 4EI/l → 3EI/l and NaN for finite springs) |
-| `anastruct/fem/postprocess.py` | `reaction_forces()` keeps the (possibly imposed) support displacements instead of zeroing them |
-| `anastruct/fem/util/load.py` | `LoadCase.thermal_load()`, `LoadCase.imposed_displacement()` |
-| `tests/test_limitations.py` | 50 tests: loads on inclined rollers (equilibrium), bar buckling, plastic hinges in a second order analysis, non linear load combinations, changes of the model after a solve |
-| `tests/test_buckling.py` | 22 tests: buckling factor against Euler columns (vertical, horizontal), frames, springs, hinges, eigenvalue problem, repeated solves |
-| `tests/test_discretize_internal_hinges.py` | 27 tests: internal-hinge detection (order independence, release rules), discretize against the original model |
-| `tests/test_hinges_springs.py` | 12 tests: hinge/spring stiffness against analytical results, incl. thermal loads |
-| `tests/test_imposed_thermal.py` | 30 plain test functions, verified against analytical solutions (incl. load combinations, model edits, sign conventions) |
-| `examples/ex_27_imposed_displacement.py` | Settlement + imposed rotation |
-| `examples/ex_28_thermal_load.py` | Uniform dT + gradient, restrained and free |
-| `examples/ex_29_thermal_loadcombination.py` | Thermal loads in `LoadCase`/`LoadCombination` |
+| `anastruct/fem/system.py` | Imposed displacements and thermal loads; `discretize()`, `insert_node()`, `remove_loads()` rewritten/extended; `_invalidate_solution()`, `_reset_plastic_state()`; plastic + second order in `solve()`; internal-hinge bookkeeping |
+| `anastruct/fem/elements.py` | `constitutive_matrix()` (condensation), `end_rotational_stiffness`, geometric stiffness (`geometric_stiffness_matrix`, releases, truss), `refresh_nodes()` |
+| `anastruct/fem/system_components/assembly.py` | `apply_temperature_load()`, prescribed displacements, inclined-roller loads, hinge/truss moment checks, restrained-DOF mask |
+| `anastruct/fem/system_components/solver.py` | `smallest_buckling_factor()`, `det_linear_buckling()`, `second_order_step()`, plastic iteration |
+| `anastruct/fem/system_components/util.py` | `check_internal_hinges()`, `describe_unrestrained_dof()` |
+| `anastruct/fem/postprocess.py` | Inclined-support conversion (proper rotation), node data kept across solves; `reaction_forces[i].ux/uy/phi_z` are the real displacements |
+| `anastruct/fem/util/load.py` | `LoadCase.thermal_load()/imposed_displacement()`; `LoadCombination` as one calculation (`_add_loads`) |
+| `anastruct/fem/plotter/mpl.py` | Hinge symbol at every released element end |
+| `tests/test_imposed_thermal.py` | 34 tests: imposed displacements and thermal loads against analytical solutions, signs, combinations, model edits |
+| `tests/test_hinges_springs.py` | 17 tests: hinge/spring stiffness against analytical results, incl. thermal and distributed loads |
+| `tests/test_discretize_internal_hinges.py` | 29 tests: internal-hinge detection, `discretize()` against the original model |
+| `tests/test_buckling.py` | 22 tests: buckling factor against Euler columns, frames, springs, hinges, repeated solves |
+| `tests/test_limitations.py` | 72 tests: inclined rollers, bar buckling, plastic hinges in second order, combinations, model edits after a solve, review findings |
+| `tests/test_upstream_examples.py` | 6 tests: upstream examples whose nested tests are not run by pytest-describe, with corrected expectations |
+| `examples/ex_27..29` | Settlement + rotation; thermal loads; thermal loads in a load combination |
 
 ## Running tests
 
 ```bash
-python -m pytest                          # whole suite (361 tests)
-python -m pytest tests/test_imposed_thermal.py -v   # new tests only
+MPLBACKEND=Agg python -m pytest           # whole suite (391 tests)
+python -m pytest tests/test_imposed_thermal.py -v   # one file
 ```
 
 Note: when running a script from outside the repo root, put the repo on the
 path (`PYTHONPATH=.`) — otherwise the *installed* `anastruct` (without these
-features) is imported instead of this working copy.
+features) is imported instead of this working copy. Several upstream examples
+(`examples/ex_4.py`, ...) show plots when imported: set `MPLBACKEND=Agg`.
 
 `python -m mypy anastruct` reports only one pre-existing error in
 `anastruct/basic.py:41` (present in upstream, not caused by this change set).

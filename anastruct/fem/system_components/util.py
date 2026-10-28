@@ -11,6 +11,19 @@ if TYPE_CHECKING:
     from anastruct.fem.system import MpType, Spring, SystemElements
 
 
+def remove_internal_hinge(system: "SystemElements", node_id: int) -> None:
+    """Remove a node from the internal hinges
+
+    Args:
+        system (SystemElements): System in which the node is located
+        node_id (int): Id of the node
+    """
+    system.internal_hinges.pop(system._internal_hinge_index.pop(node_id))
+    system._internal_hinge_index = {
+        hinge.id: position for position, hinge in enumerate(system.internal_hinges)
+    }
+
+
 def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
     """Identify internal hinges, set their hinge status
 
@@ -50,11 +63,15 @@ def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
 
     # match by node id: the node objects in the node map are replaced by the
     # post-processing, so an object from an earlier solve is not the current one
-    system.internal_hinges[:] = [
-        hinge for hinge in system.internal_hinges if hinge.id != node_id
-    ]
+    index = system._internal_hinge_index
     if is_hinge:
-        system.internal_hinges.append(node)
+        if node_id in index:
+            system.internal_hinges[index[node_id]] = node
+        else:
+            index[node_id] = len(system.internal_hinges)
+            system.internal_hinges.append(node)
+    elif node_id in index:
+        remove_internal_hinge(system, node_id)
     node.hinge = is_hinge
 
 
@@ -197,9 +214,8 @@ def remove_node_id(
         system.supports_hinged.remove(node)
     if node in system.supports_rotational:
         system.supports_rotational.remove(node)
-    system.internal_hinges[:] = [
-        hinge for hinge in system.internal_hinges if hinge.id != node_id
-    ]
+    if node_id in system._internal_hinge_index:
+        remove_internal_hinge(system, node_id)
     system._explicit_internal_hinges.discard(node_id)
     if node in system.supports_roll:
         ind = system.supports_roll.index(node)

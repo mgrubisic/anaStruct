@@ -46,6 +46,17 @@ element, instead of giving wrong values or NaN. See `docs/source/elements.rst`.
 the elements are added) were reworked as well, and the buckling factor of
 `solve(geometrical_non_linear=True)` now agrees with the Euler buckling loads.
 
+Behaviour that differs from upstream anaStruct (all documented in `docs/source` and `dev-docs/SPOZNAJE.md`):
+the `spring` and `mp` dictionaries given to `add_element` are never modified; the node and element ids
+of a system after `discretize()` are not the original ones (use `find_node_id`);
+`reaction_forces[i].ux/uy/phi_z` are the real displacements of the support node; a non
+converging plastic iteration raises a `FEMException`; the `combination` of a `LoadCombination` is one
+calculation with all the loads (the loads of the system itself count once); a positive `Fy`, `q` and
+imposed `uy` act in the +y direction.
+
+To use this fork instead of upstream, install it from GitHub:
+`pip install git+https://github.com/mgrubisic/anaStruct.git`.
+
 See `dev-docs/` for full documentation (usage recipes in `dev-docs/SKILLS.md`) and
 `examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,
 `examples/ex_29_thermal_loadcombination.py` for runnable examples.

@@ -153,6 +153,11 @@ class LoadCase:
         return f"Loadcase {self.name}:\n" + pprint.pformat(self.spec)
 
 
+def _clean(value: float) -> float:
+    """Zero for a value at rounding level (the decomposition of a load in an angle)"""
+    return 0.0 if abs(value) < 1e-12 else value
+
+
 def _add_loads(
     target: "SystemElements", case: "SystemElements", base: "SystemElements"
 ) -> None:
@@ -196,22 +201,37 @@ def _add_loads(
             a - b for a, b in zip(element.all_qn_load, base_element.all_qn_load)
         ]
         if any(value != 0 for value in added_perp + added_par):
-            angle = target_element.angle
-            dead_load = target_element.dead_load
-            total_perp = [a + b for a, b in zip(target_element.all_qp_load, added_perp)]
-            total_par = [a + b for a, b in zip(target_element.all_qn_load, added_par)]
-            # a load in the direction of the element: all_qp_load = q_perp + g * cos,
-            # all_qn_load = -q - g * sin
-            target_element.q_angle = angle
-            target_element.q_direction = "angle"
-            target_element.q_perp_load = (
-                total_perp[0] - dead_load * math.cos(angle),
-                total_perp[1] - dead_load * math.cos(angle),
-            )
-            target_element.q_load = (
-                -(total_par[0] + dead_load * math.sin(angle)),
-                -(total_par[1] + dead_load * math.sin(angle)),
-            )
+            if target_element.q_load == (0.0, 0.0) and target_element.q_perp_load == (
+                0.0,
+                0.0,
+            ):
+                # the first distributed load on this element: keep its decomposition
+                target_element.q_load = element.q_load
+                target_element.q_perp_load = element.q_perp_load
+                target_element.q_angle = element.q_angle
+                target_element.q_direction = element.q_direction
+            else:
+                angle = target_element.angle
+                dead_load = target_element.dead_load
+                total_perp = [
+                    a + b for a, b in zip(target_element.all_qp_load, added_perp)
+                ]
+                total_par = [
+                    a + b for a, b in zip(target_element.all_qn_load, added_par)
+                ]
+                # the sum, as a load in the direction of the element:
+                # all_qp_load = q_perp + g * cos, all_qn_load = -q - g * sin
+                target_element.q_angle = angle
+                target_element.q_direction = "angle"
+                # (values at rounding level, from the decomposition in an angle, are zero)
+                target_element.q_perp_load = (
+                    _clean(total_perp[0] - dead_load * math.cos(angle)),
+                    _clean(total_perp[1] - dead_load * math.cos(angle)),
+                )
+                target_element.q_load = (
+                    _clean(-(total_par[0] + dead_load * math.sin(angle))),
+                    _clean(-(total_par[1] + dead_load * math.sin(angle))),
+                )
             target.loads_q[element_id] = case.loads_q.get(
                 element_id, target.loads_q.get(element_id, [(0.0, 0.0), (0.0, 0.0)])
             )
@@ -292,17 +312,26 @@ class LoadCombination:
         :return: (ResultObject)
 
         The results of the load cases are the results of every load case on its own; the
-        loads of the system itself are part of each of them. The 'combination' is the result of
-        one calculation of the system with the loads of all the load cases, each multiplied by
-        its factor, so the loads of the system itself count once. This is the same as the sum of
+        loads of the system itself are part of each of them, and a load of the case at the same
+        node or element replaces them. The 'combination' is the result of one calculation of the
+        system with the loads of all the load cases, each multiplied by its factor, added to the
+        loads of the system itself, which count once. This is the same as the sum of
         the load cases for a linear calculation, and the only correct one if the calculation is
         not linear (second order effects, or non linear nodes without `force_linear`): the
         combination then has its own buckling factor, for the combined loads.
+
+        Development **kwargs (passed to the solve of every load case and of the combination):
+            :param naked: (bool) Whether or not to run the solve function without doing
+                          post processing.
+            :param discretize_kwargs: When doing a geometric non linear analysis you can reduce or
+                                      increase the number of elements created that are used for
+                                      determining the buckling_factor
         """
 
         results = {}
         for lc, factor in self.spec.values():
             ss = copy.deepcopy(system)
+            ss._invalidate_solution()  # also when the system has been solved before
 
             ss.load_factor = factor
             ss.apply_load_case(lc)
@@ -315,11 +344,18 @@ class LoadCombination:
         # results of non linear calculations can not be superposed, and for a linear one it
         # is the same, while the loads of the system itself count once
         ss_combined = copy.deepcopy(system)
+        ss_combined._invalidate_solution()
+        # every load case is applied to the system without its loads, so that the loads of the
+        # case are added to the loads of the system (in the result of a load case on its own
+        # they replace the loads of the system at the same node or element)
+        unloaded = copy.deepcopy(system)
+        unloaded._invalidate_solution()
+        unloaded.remove_loads()
         for lc, factor in self.spec.values():
-            ss = copy.deepcopy(system)
+            ss = copy.deepcopy(unloaded)
             ss.load_factor = factor
             ss.apply_load_case(lc)
-            _add_loads(ss_combined, ss, system)
+            _add_loads(ss_combined, ss, unloaded)
         ss_combined.solve(
             force_linear, verbosity, max_iter, geometrical_non_linear, **kwargs
         )

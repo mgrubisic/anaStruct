@@ -99,6 +99,21 @@ def apply_moment_load(system: "SystemElements") -> None:
         system (SystemElements): System to which the moment load is applied
     """
     for node_id, Tz in system.loads_moment.items():
+        if Tz != 0 and system.node_map[node_id].hinge:
+            raise FEMException(
+                "Invalid parameters",
+                f"A moment load at node {node_id} can not be carried: the node is an internal "
+                "hinge (no element transfers a moment there). Place the moment load at a node "
+                "where an element is rigidly connected.",
+            )
+        if Tz != 0 and all(
+            element.type == "truss" for element in system.node_element_map[node_id]
+        ):
+            raise FEMException(
+                "Invalid parameters",
+                f"A moment load at node {node_id} can not be carried: only truss elements, "
+                "which have no bending stiffness, are connected to the node.",
+            )
         set_force_vector(system, [(node_id, 3, Tz)])
 
 

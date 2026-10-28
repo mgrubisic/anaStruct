@@ -28,6 +28,7 @@ def second_order_step(system: "SystemElements") -> None:
     system.post_processor.node_results_elements()
     for el in system.element_map.values():
         el.N_1 = math.sin(el.angle) * el.node_1.Fy - math.cos(el.angle) * el.node_1.Fx
+        el.N_2 = -math.sin(el.angle) * el.node_2.Fy + math.cos(el.angle) * el.node_2.Fx
         el.compile_geometric_non_linear_stiffness_matrix()
     system.solve(True, naked=True)
 
@@ -54,11 +55,7 @@ def stiffness_adaptation(
 
     # start from the elastic stiffness: the plastic reduction of an earlier calculation
     # would otherwise be the starting point of this one
-    for el in system.element_map.values():
-        el.nodes_plastic = [False, False]
-        el.refresh_nodes(system.node_map)
-        el.compile_constitutive_matrix()
-        el.compile_stiffness_matrix()
+    system._reset_plastic_state()
 
     solve_step()
     if verbosity == 0:
@@ -66,7 +63,7 @@ def stiffness_adaptation(
 
     # check validity
     assert all(
-        mp > 0 for mpd in system.non_linear_elements.values() for mp in mpd
+        mp > 0 for mpd in system.non_linear_elements.values() for mp in mpd.values()
     ), "Cannot solve for an mp = 0. If you want a hinge set the spring stiffness equal to 0."
 
     iteration = 0
@@ -118,7 +115,8 @@ def stiffness_adaptation(
         raise FEMException(
             "ConvergenceError",
             f"The plastic iteration did not converge in max_iter={max_iter} iterations. "
-            "The structure may be a mechanism: check the plastic moments (mp) and the loads.",
+            "The structure may be a mechanism (check the plastic moments mp and the loads), "
+            "or the iteration needs more iterations: increase max_iter.",
         )
     if verbosity == 0:
         logging.info(f"Solved in {iteration} iterations")
@@ -148,6 +146,11 @@ def smallest_buckling_factor(k0: np.ndarray, kg: np.ndarray) -> float:
     Returns:
         float: The smallest positive factor λ, or infinity when there is no buckling mode (no compression).
     """
+    if k0.size == 0:
+        # every degree of freedom is restrained: nothing can buckle
+        logging.warning("There are no free degrees of freedom: no buckling mode.")
+        return float("inf")
+
     try:
         # K0 = L Lᵀ: ν are the eigenvalues of the symmetric matrix L⁻¹ Kg L⁻ᵀ
         chol = np.linalg.cholesky(k0)
