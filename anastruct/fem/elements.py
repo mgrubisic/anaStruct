@@ -555,7 +555,7 @@ def _geometric_stiffness_matrix(l: float, N: float, angle: float) -> np.ndarray:
     c1 = c2 = cos(angle)
     s1 = s2 = sin(angle)
     # http://people.duke.edu/~hpgavin/cee421/frame-finite-def.pdf
-    return (
+    matrix: np.ndarray = (
         N
         / l
         * np.array(
@@ -614,3 +614,4 @@ def _geometric_stiffness_matrix(l: float, N: float, angle: float) -> np.ndarray:
         # (the rows and the columns, so that the matrix stays symmetric)
         * np.outer([1, -1, 1, 1, -1, 1], [1, -1, 1, 1, -1, 1])
     )
+    return matrix
