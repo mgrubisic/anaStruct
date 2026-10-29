@@ -37,7 +37,8 @@ mode; if no compressive normal force acts on the free degrees of freedom the buc
 (:code:`float("inf")`).
 
 The geometric stiffness matrix of a cubic beam element is an approximation, so the factor is found from above and
-converges with the number of elements: one element gives :math:`12 EI/L^2` for a column pinned at both ends, 20 elements
+converges with the number of elements (at the end of an element with a hinge or a rotational spring the stiffness is
+condensed together with the geometric stiffness, so one element per member is within a few tenths of a percent): one element gives :math:`12 EI/L^2` for a column pinned at both ends, 20 elements
 the Euler load :math:`\pi^2 EI/L^2` within 0.01 %. Hinges and rotational springs at the ends of an element (see
 :ref:`End releases <end-releases>`) are accounted for.
 
@@ -57,6 +58,11 @@ Non linear nodes and second order effects
 A second order calculation can be combined with non linear nodes (:code:`mp=`): every step of the iteration for the
 plastic moments is a second order analysis, so the compression increases the moments and the displacements while the
 moments at the plastic hinges stay at the plastic moment. The buckling factor is that of the elastic structure.
+
+A plastic hinge is a rotational spring in series with the element (and with a rotational spring given by the
+user). Its stiffness is iterated with the secant :code:`k = k * mp / |M|`, so the end moment converges to the
+plastic moment and the moment is redistributed exactly. A hinge that is unloaded below :code:`mp` becomes elastic
+again. If the plastic hinges turn the structure into a mechanism a :code:`FEMException` is raised.
 
 Buckling of a bar of a truss
 ............................

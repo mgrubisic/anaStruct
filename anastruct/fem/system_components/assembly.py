@@ -4,7 +4,10 @@ from typing import TYPE_CHECKING, List, Tuple
 import numpy as np
 
 from anastruct.basic import FEMException
-from anastruct.fem.system_components.util import describe_unrestrained_dof
+from anastruct.fem.system_components.util import (
+    describe_unrestrained_dof,
+    dof_index,
+)
 from anastruct.fem.elements import det_axial, det_moment, det_shear
 
 if TYPE_CHECKING:
@@ -28,7 +31,7 @@ def set_force_vector(
     """
     assert system.system_force_vector is not None
     for id_, direction, force in force_list:
-        system.system_force_vector[(id_ - 1) * 3 + direction - 1] += force
+        system.system_force_vector[dof_index(system, id_) + direction - 1] += force
 
     return system.system_force_vector
 
@@ -39,9 +42,7 @@ def prep_matrix_forces(system: "SystemElements") -> None:
     Args:
         system (SystemElements): System to which the force vector is applied
     """
-    system.system_force_vector = system.system_force_vector = np.zeros(
-        len(system._vertices) * 3
-    )
+    system.system_force_vector = np.zeros(len(system.node_map) * 3)
     apply_perpendicular_q_load(system)
     apply_parallel_qn_load(system)
     apply_point_load(system)
@@ -84,12 +85,12 @@ def apply_temperature_load(system: "SystemElements") -> None:
 
         # Set force vector
         assert system.system_force_vector is not None
-        system.system_force_vector[
-            (element.node_id1 - 1) * 3 : (element.node_id1 - 1) * 3 + 3
-        ] += primary_force[0:3]
-        system.system_force_vector[
-            (element.node_id2 - 1) * 3 : (element.node_id2 - 1) * 3 + 3
-        ] += primary_force[3:]
+        for node_id, part in (
+            (element.node_id1, primary_force[0:3]),
+            (element.node_id2, primary_force[3:]),
+        ):
+            start = dof_index(system, node_id)
+            system.system_force_vector[start : start + 3] += part
 
 
 def apply_moment_load(system: "SystemElements") -> None:
@@ -99,6 +100,21 @@ def apply_moment_load(system: "SystemElements") -> None:
         system (SystemElements): System to which the moment load is applied
     """
     for node_id, Tz in system.loads_moment.items():
+        if Tz != 0 and system.node_map[node_id].hinge:
+            raise FEMException(
+                "Invalid parameters",
+                f"A moment load at node {node_id} can not be carried: the node is an internal "
+                "hinge (no element transfers a moment there). Place the moment load at a node "
+                "where an element is rigidly connected.",
+            )
+        if Tz != 0 and all(
+            element.type == "truss" for element in system.node_element_map[node_id]
+        ):
+            raise FEMException(
+                "Invalid parameters",
+                f"A moment load at node {node_id} can not be carried: only truss elements, "
+                "which have no bending stiffness, are connected to the node.",
+            )
         set_force_vector(system, [(node_id, 3, Tz)])
 
 
@@ -174,12 +190,12 @@ def apply_perpendicular_q_load(system: "SystemElements") -> None:
 
         # Set force vector
         assert system.system_force_vector is not None
-        system.system_force_vector[
-            (element.node_id1 - 1) * 3 : (element.node_id1 - 1) * 3 + 3
-        ] += primary_force[0:3]
-        system.system_force_vector[
-            (element.node_id2 - 1) * 3 : (element.node_id2 - 1) * 3 + 3
-        ] += primary_force[3:]
+        for node_id, part in (
+            (element.node_id1, primary_force[0:3]),
+            (element.node_id2, primary_force[3:]),
+        ):
+            start = dof_index(system, node_id)
+            system.system_force_vector[start : start + 3] += part
 
 
 def apply_parallel_qn_load(system: "SystemElements") -> None:
@@ -251,8 +267,9 @@ def assemble_system_matrix(
         system.system_matrix = np.zeros((shape, shape))
 
     assert system.system_matrix is not None
-    for matrix_index, K in system.system_spring_map.items():
+    for (node_id, translation), K in system.system_spring_map.items():
         #  first index is row, second is column
+        matrix_index = dof_index(system, node_id) + translation - 1
         system.system_matrix[matrix_index][matrix_index] += K
 
     # Determine the elements location in the stiffness matrix.
@@ -284,8 +301,8 @@ def assemble_system_matrix(
         element_matrix = element.stiffness_matrix
 
         # n1 and n2 are starting indexes of the rows and the columns for node 1 and node 2
-        n1 = (element.node_1.id - 1) * 3
-        n2 = (element.node_2.id - 1) * 3
+        n1 = dof_index(system, element.node_1.id)
+        n2 = dof_index(system, element.node_2.id)
         system.system_matrix[n1 : n1 + 3, n1 : n1 + 3] += element_matrix[0:3, :3]
         system.system_matrix[n1 : n1 + 3, n2 : n2 + 3] += element_matrix[0:3, 3:]
 
@@ -315,10 +332,10 @@ def set_displacement_vector(
         np.ndarray: System displacement vector with the applied displacements on the nodes
     """
     if system.system_displacement_vector is None:
-        system.system_displacement_vector = np.ones(len(system._vertices) * 3) * np.nan
+        system.system_displacement_vector = np.ones(len(system.node_map) * 3) * np.nan
 
     for i in nodes_list:
-        index = (i[0] - 1) * 3 + i[1] - 1
+        index = dof_index(system, i[0]) + i[1] - 1
 
         try:
             system.system_displacement_vector[index] = 0
@@ -384,6 +401,10 @@ def process_supports(system: "SystemElements") -> None:
     Args:
         system (SystemElements): System to be processed
     """
+    if system.system_displacement_vector is None:
+        # also a model without any support (which is unstable, but not an error here)
+        system.system_displacement_vector = np.ones(len(system.node_map) * 3) * np.nan
+
     for node in system.supports_hinged:
         set_displacement_vector(system, [(node.id, 1), (node.id, 2)])
 
@@ -458,7 +479,7 @@ def process_supports(system: "SystemElements") -> None:
         for direction, displacement in ((1, ux), (2, uy), (3, phi_z)):
             if displacement is None or displacement == 0:
                 continue
-            index = (node_id - 1) * 3 + direction - 1
+            index = dof_index(system, node_id) + direction - 1
             if np.isnan(system.system_displacement_vector[index]):
                 raise FEMException(
                     "StabilityError",

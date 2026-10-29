@@ -89,8 +89,9 @@ The `combination` is the result of one calculation of the system with the loads 
 multiplied by its factor. For a linear calculation this is the sum of the load cases, but the results of a non linear
 calculation (second order effects with `geometrical_non_linear=True`, or non linear nodes with `mp=`) can not be
 superposed, so this is the only correct way. The combination has its own `buckling_factor`, for the combined loads.
-The loads that were applied to the system itself, such as self-weights, are part of the result of every load case, and
-count once in the combination.
+The loads that were applied to the system itself, such as self-weights, are part of the result of every load case (a
+load of the case at the same node or element replaces them there) and count once in the combination, to which the loads
+of all the load cases are added.
 
 .. code-block:: python
 

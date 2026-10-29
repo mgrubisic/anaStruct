@@ -11,6 +11,41 @@ if TYPE_CHECKING:
     from anastruct.fem.system import MpType, Spring, SystemElements
 
 
+def dof_index(system: "SystemElements", node_id: int) -> int:
+    """Index of the first degree of freedom of a node in the system matrix and vectors
+
+    The nodes are numbered 1, 2, ... in the order they are added, but removing an element can
+    remove a node and leave a gap in the ids. The degrees of freedom of the remaining nodes
+    follow each other in the order of their ids, three per node.
+
+    Args:
+        system (SystemElements): System in which the node is located
+        node_id (int): Id of the node
+
+    Returns:
+        int: Index of the displacement in x direction of the node (the next two are y and the
+            rotation)
+    """
+    if system._node_index is None:
+        system._node_index = {
+            id_: position for position, id_ in enumerate(sorted(system.node_map))
+        }
+    return system._node_index[node_id] * 3
+
+
+def remove_internal_hinge(system: "SystemElements", node_id: int) -> None:
+    """Remove a node from the internal hinges
+
+    Args:
+        system (SystemElements): System in which the node is located
+        node_id (int): Id of the node
+    """
+    system.internal_hinges.pop(system._internal_hinge_index.pop(node_id))
+    system._internal_hinge_index = {
+        hinge.id: position for position, hinge in enumerate(system.internal_hinges)
+    }
+
+
 def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
     """Identify internal hinges, set their hinge status
 
@@ -50,11 +85,15 @@ def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
 
     # match by node id: the node objects in the node map are replaced by the
     # post-processing, so an object from an earlier solve is not the current one
-    system.internal_hinges[:] = [
-        hinge for hinge in system.internal_hinges if hinge.id != node_id
-    ]
+    index = system._internal_hinge_index
     if is_hinge:
-        system.internal_hinges.append(node)
+        if node_id in index:
+            system.internal_hinges[index[node_id]] = node
+        else:
+            index[node_id] = len(system.internal_hinges)
+            system.internal_hinges.append(node)
+    elif node_id in index:
+        remove_internal_hinge(system, node_id)
     node.hinge = is_hinge
 
 
@@ -168,6 +207,7 @@ def append_node_id(
         system.node_map[node_id1] = Node(node_id1, vertex=point_1)
     if node_id2 not in system.node_map:
         system.node_map[node_id2] = Node(node_id2, vertex=point_2)
+    system._node_index = None
 
 
 def remove_node_id(
@@ -184,42 +224,44 @@ def remove_node_id(
         system (SystemElements): System in which the node is located
         node_id (int): Node id of the node
     """
-    node = system.node_map[node_id]
     system._vertices.pop(system.node_map[node_id].vertex)
     system.node_map.pop(node_id)
+    system._node_index = None
     if node_id in system.loads_point:
         system.loads_point.pop(node_id)
     if node_id in system.loads_moment:
         system.loads_moment.pop(node_id)
-    if node in system.supports_fixed:
-        system.supports_fixed.remove(node)
-    if node in system.supports_hinged:
-        system.supports_hinged.remove(node)
-    if node in system.supports_rotational:
-        system.supports_rotational.remove(node)
-    system.internal_hinges[:] = [
-        hinge for hinge in system.internal_hinges if hinge.id != node_id
-    ]
+    # (the nodes of the supports are compared by id: after a solve the node objects of the
+    # node map are replaced by copies with the results)
+    for supports in (
+        system.supports_fixed,
+        system.supports_hinged,
+        system.supports_rotational,
+    ):
+        supports[:] = [n for n in supports if n.id != node_id]
+    if node_id in system._internal_hinge_index:
+        remove_internal_hinge(system, node_id)
     system._explicit_internal_hinges.discard(node_id)
-    if node in system.supports_roll:
-        ind = system.supports_roll.index(node)
-        system.supports_roll.remove(node)
+    for ind in reversed(
+        [i for i, n in enumerate(system.supports_roll) if n.id == node_id]
+    ):
+        system.supports_roll.pop(ind)
         system.supports_roll_direction.pop(ind)
         system.supports_roll_rotate.pop(ind)
     if node_id in system.inclined_roll:
         system.inclined_roll.pop(node_id)
-    if node in [item[0] for item in system.supports_spring_x]:
-        ind = [item[0] for item in system.supports_spring_x].index(node)
-        system.supports_spring_x.pop(ind)
-    if node in [item[0] for item in system.supports_spring_y]:
-        ind = [item[0] for item in system.supports_spring_y].index(node)
-        system.supports_spring_y.pop(ind)
-    if node in [item[0] for item in system.supports_spring_z]:
-        ind = [item[0] for item in system.supports_spring_z].index(node)
-        system.supports_spring_z.pop(ind)
-    if node_id in [item[0] for item in system.supports_spring_args]:
-        ind = [item[0] for item in system.supports_spring_args].index(node_id)
-        system.supports_spring_args.pop(ind)
+    for springs in (
+        system.supports_spring_x,
+        system.supports_spring_y,
+        system.supports_spring_z,
+    ):
+        springs[:] = [item for item in springs if item[0].id != node_id]
+    system.supports_spring_args[:] = [
+        item for item in system.supports_spring_args if item[0] != node_id
+    ]
+    for key in [key for key in system.system_spring_map if key[0] == node_id]:
+        system.system_spring_map.pop(key)
+    system.loads_displacement.pop(node_id, None)
 
 
 def det_vertices(
@@ -291,7 +333,14 @@ def det_node_ids(
         if k in system._vertices:
             node_id = system._vertices[k]
         else:
-            node_id = len(system._vertices) + 1
+            # (the ids have gaps after remove_element, so the count would reuse an id)
+            node_id = (
+                max(
+                    max(system.node_map, default=0),
+                    max(system._vertices.values(), default=0),
+                )
+                + 1
+            )
             system._vertices[k] = node_id
         node_ids.append(node_id)
     return node_ids[0], node_ids[1]
@@ -316,8 +365,8 @@ def add_node(
         int: The node id of the added (or existing) node
     """
     if point in system._vertices:
+        existing_node_id = system._vertices[point]
         if node_id is not None:
-            existing_node_id = system._vertices[point]
             if existing_node_id != node_id:
                 raise FEMException(
                     "Flawed inputs",
@@ -336,6 +385,7 @@ def add_node(
 
     system._vertices[point] = node_id
     system.node_map[node_id] = Node(node_id, vertex=point)
+    system._node_index = None
     return node_id
 
 

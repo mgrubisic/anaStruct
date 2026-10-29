@@ -121,7 +121,7 @@ class SystemElements:
         )  # maps node ids to Element objects
         # keys matrix index (for both row and columns), values K, are processed
         # assemble_system_matrix
-        self.system_spring_map: Dict[int, float] = {}
+        self.system_spring_map: Dict[Tuple[int, int], float] = {}
 
         # list of indexes that remain after conditions are applied
         self._remainder_indexes: List[int] = []
@@ -134,6 +134,10 @@ class SystemElements:
         # node ids declared with add_internal_hinge (internal_hinges also holds the
         # nodes where the elements are released by their springs)
         self._explicit_internal_hinges: Set[int] = set()
+        # position of every node id in internal_hinges (the list is updated in place)
+        self._internal_hinge_index: Dict[int, int] = {}
+        # position of every node id in the system matrix (nodes can be removed)
+        self._node_index: Optional[Dict[int, int]] = None
         self.supports_roll: List[Node] = []
         self.supports_spring_x: List[Tuple[Node, bool]] = []
         self.supports_spring_y: List[Tuple[Node, bool]] = []
@@ -196,6 +200,18 @@ class SystemElements:
         self.reduced_system_matrix: Optional[np.ndarray] = None
         self._vertices: Dict[Vertex, int] = {}  # maps vertices to node ids
 
+    def _reset_plastic_state(self) -> None:
+        """Back to the elastic stiffness of all the elements
+
+        A plastic iteration reduces the stiffness of the elements at the plastic hinges. A
+        linear calculation, and every new plastic iteration, starts from the elastic stiffness.
+        """
+        for element in self.element_map.values():
+            element.reset_plastic()
+            element.refresh_nodes(self.node_map)
+            element.compile_constitutive_matrix()
+            element.compile_stiffness_matrix()
+
     def _invalidate_solution(self) -> None:
         """A change of the model (supports, elements) makes the solution out of date.
 
@@ -210,12 +226,7 @@ class SystemElements:
         self._restrained_dofs = None
         self._prescribed_displacements = {}
         self.buckling_factor = None
-        for element in self.element_map.values():
-            element.nodes_plastic = [False, False]
-            # the node copies of the post-processing hold the hinge status of the last solve
-            element.refresh_nodes(self.node_map)
-            element.compile_constitutive_matrix()
-            element.compile_stiffness_matrix()
+        self._reset_plastic_state()
 
     @property
     def id_last_element(self) -> int:
@@ -462,10 +473,18 @@ class SystemElements:
 
         self._invalidate_solution()
 
+        previous_point = self._previous_point
+        point_1, point_2 = system_components.util.det_vertices(self, location)
+        if point_1 == point_2:
+            self._previous_point = previous_point
+            raise FEMException(
+                "Invalid parameters",
+                f"An element needs two different locations, but both are {point_1}.",
+            )
+
         # add the element number
         self.count += 1
 
-        point_1, point_2 = system_components.util.det_vertices(self, location)
         node_id1, node_id2 = system_components.util.det_node_ids(self, point_1, point_2)
 
         (
@@ -781,6 +800,7 @@ class SystemElements:
             g=element_to_split.dead_load,
             mp=mp1,
             spring=spring1,
+            element_type=element_to_split.type,
         )
         element_id2 = self.add_element(
             [location_vertex, vertex_end],
@@ -789,31 +809,46 @@ class SystemElements:
             g=element_to_split.dead_load,
             mp=mp2,
             spring=spring2,
+            element_type=element_to_split.type,
         )
+        for new_element_id in (element_id1, element_id2):
+            self.element_map[new_element_id].section_name = (
+                element_to_split.section_name
+            )
 
-        # Copy the q-loads from the old element to the new elements
+        # Copy the q-loads from the old element to the new elements. The stored values contain
+        # the load factor and the orientation of the y-axis, so they are copied as they are,
+        # interpolated linearly over the old element.
         if element_id_to_split in self.loads_q:
-            q_load_start = element_to_split.q_load[0]
-            q_load_end = element_to_split.q_load[1]
-            q_perp_load_start = element_to_split.q_perp_load[0]
-            q_perp_load_end = element_to_split.q_perp_load[1]
-            location_q_load = factor * (q_load_end - q_load_start) + q_load_start
-            location_q_perp_load = (
-                factor * (q_perp_load_end - q_perp_load_start) + q_perp_load_start
-            )
-            assert element_to_split.q_angle is not None
-            self.q_load(
-                q=[-q_load_start, -location_q_load],
-                element_id=element_id1,
-                rotation=np.degrees(element_to_split.q_angle),
-                q_perp=[q_perp_load_start, location_q_perp_load],
-            )
-            self.q_load(
-                q=[-location_q_load, -q_load_end],
-                element_id=element_id2,
-                rotation=np.degrees(element_to_split.q_angle),
-                q_perp=[location_q_perp_load, q_perp_load_end],
-            )
+
+            def interpolate(start_value: float, end_value: float, at: float) -> float:
+                return start_value + (end_value - start_value) * at
+
+            forces_q = self.loads_q[element_id_to_split]
+            for new_element_id, (at_start, at_end) in (
+                (element_id1, (0.0, factor)),
+                (element_id2, (factor, 1.0)),
+            ):
+                self.loads_q[new_element_id] = [
+                    (
+                        interpolate(forces_q[0][0], forces_q[1][0], at),
+                        interpolate(forces_q[0][1], forces_q[1][1], at),
+                    )
+                    for at in (at_start, at_end)
+                ]
+                new_element = self.element_map[new_element_id]
+                q_start, q_end = element_to_split.q_load
+                q_perp_start, q_perp_end = element_to_split.q_perp_load
+                new_element.q_load = (
+                    interpolate(q_start, q_end, at_start),
+                    interpolate(q_start, q_end, at_end),
+                )
+                new_element.q_perp_load = (
+                    interpolate(q_perp_start, q_perp_end, at_start),
+                    interpolate(q_perp_start, q_perp_end, at_end),
+                )
+                new_element.q_direction = element_to_split.q_direction
+                new_element.q_angle = element_to_split.q_angle
 
         # Copy the thermal load from the old element to the new elements (the free
         # strain and curvature are uniform over the element)
@@ -948,7 +983,8 @@ class SystemElements:
                 Defaults to False.
             verbosity (int, optional): Log calculation outputs (0), or silence (1). Defaults to 0.
             max_iter (int, optional): Maximum allowed iterations of the plastic iteration of non-linear nodes.
-                A FEMException is raised if it does not converge (the structure may be a mechanism). Defaults to 200.
+                A FEMException ("ConvergenceError") is raised if it does not converge: the structure may be a
+                mechanism, or the iteration may need more iterations (increase max_iter). Defaults to 200.
             geometrical_non_linear (int, optional): Calculate second order effects and determine the buckling factor.
                 This can be combined with non linear nodes (`mp=`): every step of the plastic iteration is then
                 a second order analysis, and the buckling factor is that of the elastic structure.
@@ -976,6 +1012,11 @@ class SystemElements:
             assert self.system_displacement_vector is not None
 
         naked = kwargs.get("naked", False)
+
+        if self.non_linear and force_linear and not naked:
+            # a linear calculation is elastic: no plastic reduction of an earlier calculation
+            # (the plastic iteration itself calls this method with naked=True)
+            self._reset_plastic_state()
 
         if not naked:
             if not self.validate():
@@ -1043,8 +1084,8 @@ class SystemElements:
 
         # determine the displacement vector of the elements
         for el in self.element_map.values():
-            index_node_1 = (el.node_1.id - 1) * 3
-            index_node_2 = (el.node_2.id - 1) * 3
+            index_node_1 = system_components.util.dof_index(self, el.node_1.id)
+            index_node_2 = system_components.util.dof_index(self, el.node_2.id)
 
             # node 1 ux, uy, phi
             el.element_displacement_vector[:3] = self.system_displacement_vector[
@@ -1065,11 +1106,13 @@ class SystemElements:
 
             # check the values in the displacement vector for extreme values, indicating a
             # flawed calculation
-            assert np.any(self.system_displacement_vector < 1e6), (
-                "The displacements of the structure exceed 1e6. "
-                "Check your support conditions,"
-                "or your elements Young's modulus"
-            )
+            if not np.all(np.abs(self.system_displacement_vector) < 1e6):
+                raise FEMException(
+                    "StabilityError",
+                    "The displacements of the structure exceed 1e6. "
+                    "Check your support conditions, "
+                    "or your elements Young's modulus",
+                )
 
         return self.system_displacement_vector
 
@@ -1085,6 +1128,11 @@ class SystemElements:
         """
 
         ss = copy.copy(self)
+        if ss.system_displacement_vector is None:
+            # not solved yet: the hinges and the supports are processed on the copy
+            for node_id in ss.node_map:
+                system_components.util.check_internal_hinges(ss, node_id)
+            system_components.assembly.process_supports(ss)
         system_components.assembly.prep_matrix_forces(ss)
         assert ss.system_force_vector is not None
         assert np.abs(ss.system_force_vector).sum() != 0 or any(
@@ -1096,7 +1144,9 @@ class SystemElements:
         system_components.assembly.process_conditions(ss)
 
         assert ss.reduced_system_matrix is not None
-        w, _ = np.linalg.eig(ss.reduced_system_matrix)
+        # the reduced stiffness matrix is symmetric: real eigenvalues, and faster
+        reduced = np.asarray(ss.reduced_system_matrix)
+        w = np.linalg.eigvalsh((reduced + reduced.T) / 2)
         return bool(np.all(w > min_eigen))
 
     def add_support_hinged(self, node_id: Union[int, Sequence[int]]) -> None:
@@ -1275,11 +1325,15 @@ class SystemElements:
                 # only a spring that restrains the rotation conflicts with a hinge
                 system_components.util.support_check(self, id_)
 
-            # determine the location in the system matrix
-            # row and column are the same
-            matrix_index = (id_ - 1) * 3 + translation_ - 1
+            if not np.isfinite(k_) or k_ < 0:
+                raise FEMException(
+                    "Invalid parameters",
+                    f"The stiffness of a spring support must be finite and not negative, but is {k_}. "
+                    "A rigid support is a fixed, hinged or roll support.",
+                )
 
-            self.system_spring_map[matrix_index] = k_
+            # the stiffness is added to the system matrix at the degree of freedom of the node
+            self.system_spring_map[(id_, translation_)] = k_
 
             # add the support to the support list for the plotter
             if translation_ == 1:
@@ -1363,33 +1417,81 @@ class SystemElements:
                     )
             else:
                 rotation[i] = math.radians(rotation[i])
+                if self.orientation_cs > 0:
+                    # invert_y_loads=False: the load of a rotation r is the mirror image (in the
+                    # x-axis) of the default one, so rotation 0 is 'x' and rotation 90 is 'y'
+                    rotation[i] = -rotation[i]
                 direction[i] = "angle"
 
             cos = math.cos(rotation[i])
             sin = math.sin(rotation[i])
+            # With invert_y_loads=False a positive load in the y-direction acts the other way
+            # (like Fy), but a load in the x-direction ('x') or along the element
+            # ('parallel') does not (like Fx): their sign stays that of the default, and the
+            # load perpendicular to them (q_perp) is the y-like one.
+            same_as_default = (direction[i] == "angle" and self.orientation_cs > 0) or (
+                direction_flag and direction[i] in ("x", "parallel")
+            )
+            q_factor = -1.0 if same_as_default else float(self.orientation_cs)
+            q_perp_factor = -float(self.orientation_cs) if same_as_default else 1.0
             self.loads_q[id_] = [
                 (
-                    (q_perp_arr[i][0] * cos + q_arr[i][0] * sin) * self.load_factor,
-                    (q_arr[i][0] * self.orientation_cs * cos + q_perp_arr[i][0] * sin)
+                    (
+                        q_perp_arr[i][0] * q_perp_factor * cos
+                        - q_arr[i][0] * q_factor * sin
+                    )
+                    * self.load_factor,
+                    (
+                        q_arr[i][0] * q_factor * cos
+                        + q_perp_arr[i][0] * q_perp_factor * sin
+                    )
                     * self.load_factor,
                 ),
                 (
-                    (q_perp_arr[i][1] * cos + q_arr[i][1] * sin) * self.load_factor,
-                    (q_arr[i][1] * self.orientation_cs * cos + q_perp_arr[i][1] * sin)
+                    (
+                        q_perp_arr[i][1] * q_perp_factor * cos
+                        - q_arr[i][1] * q_factor * sin
+                    )
+                    * self.load_factor,
+                    (
+                        q_arr[i][1] * q_factor * cos
+                        + q_perp_arr[i][1] * q_perp_factor * sin
+                    )
                     * self.load_factor,
                 ),
             ]
             el = self.element_map[id_]
             el.q_load = (
-                self.orientation_cs * self.load_factor * q_arr[i][0],
-                self.orientation_cs * self.load_factor * q_arr[i][1],
+                q_factor * self.load_factor * q_arr[i][0],
+                q_factor * self.load_factor * q_arr[i][1],
             )
             el.q_perp_load = (
-                q_perp_arr[i][0] * self.load_factor,
-                q_perp_arr[i][1] * self.load_factor,
+                q_perp_factor * q_perp_arr[i][0] * self.load_factor,
+                q_perp_factor * q_perp_arr[i][1] * self.load_factor,
             )
             el.q_direction = direction[i]
             el.q_angle = rotation[i]
+
+    def dead_load(
+        self,
+        element_id: Union[int, Sequence[int]],
+        g: Union[float, Sequence[float]],
+    ) -> None:
+        """Apply a dead load (self-weight) to an element, like the `g` of `add_element`.
+
+        The load is multiplied by the `load_factor`. Applying it again to the same element
+        replaces the earlier dead load.
+
+        Args:
+            element_id (Union[int, Sequence[int]]): The element ID to which to apply the load
+            g (Union[float, Sequence[float]]): Weight per unit of length
+        """
+        n_elems = len(element_id) if isinstance(element_id, Sequence) else 1
+        element_ids = arg_to_list(element_id, n_elems)
+        weights = arg_to_list(g, n_elems)
+        for element_idi, weight in zip(element_ids, weights):
+            id_ = _negative_index_to_id(element_idi, self.element_map.keys())
+            system_components.assembly.dead_load(self, weight * self.load_factor, id_)
 
     def point_load(
         self,
@@ -1429,7 +1531,7 @@ class SystemElements:
             cos = math.cos(math.radians(rotation[i]))
             sin = math.sin(math.radians(rotation[i]))
             self.loads_point[id_] = (
-                (Fx[i] * cos + Fy[i] * sin) * self.load_factor,
+                (Fx[i] * cos - self.orientation_cs * Fy[i] * sin) * self.load_factor,
                 (Fy[i] * self.orientation_cs * cos + Fx[i] * sin) * self.load_factor,
             )
 
@@ -2654,11 +2756,12 @@ class SystemElements:
 
         for k in self.element_map:  # pylint: disable=consider-using-dict-items
             self.element_map[k].q_load = (0.0, 0.0)
+            self.element_map[k].q_perp_load = (0.0, 0.0)
             self.element_map[k].temperature_load = (0.0, 0.0)
             if dead_load:
                 self.element_map[k].dead_load = 0
-        if dead_load:
-            self.loads_dead_load = set()
+        # (loads_dead_load is not cleared: the loads of all the elements of that set are
+        # processed when solving, also the q-loads, so an element must stay in it)
 
     def apply_load_case(self, loadcase: LoadCase) -> None:
         """Apply a load case to the structure.
