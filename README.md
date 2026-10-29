@@ -13,7 +13,8 @@ Analyse 2D Frames and trusses for slender structures. Determine the bending mome
 
 This fork ([mgrubisic/anaStruct](https://github.com/mgrubisic/anaStruct)) adds two load
 types on top of upstream anaStruct, verified against analytical solutions in
-`tests/test_imposed_thermal.py`:
+`tests/test_imposed_thermal.py`, and corrects a number of upstream defects (listed below). The badges
+at the top belong to upstream. Whole test suite: 430 tests (`MPLBACKEND=Agg python -m pytest`).
 
 * **Imposed displacements/rotations of supports** (support settlement):
   `ss.imposed_displacement(node_id, ux=None, uy=None, phi_z=None)` — also available in
@@ -44,7 +45,9 @@ one hinge has 3EI/l instead of 4EI/l) and a finite spring `k` acts in series wit
 element, instead of giving wrong values or NaN. See `docs/source/elements.rst`.
 `discretize()` and the detection of internal hinges (independent of the order in which
 the elements are added) were reworked as well, and the buckling factor of
-`solve(geometrical_non_linear=True)` now agrees with the Euler buckling loads.
+`solve(geometrical_non_linear=True)` now agrees with the Euler buckling loads. Plastic hinges
+(`mp=`), removing elements (`remove_element`), `LoadCase.dead_load`, `validate()` before the first
+`solve()` and the loads with `invert_y_loads=False` were corrected too.
 
 Behaviour that differs from upstream anaStruct (all documented in `docs/source` and `dev-docs/SPOZNAJE.md`):
 the `spring` and `mp` dictionaries given to `add_element` are never modified; the node and element ids
@@ -60,15 +63,22 @@ node ids may have gaps after `remove_element`; `LoadCase.dead_load` and `validat
 To use this fork instead of upstream, install it from GitHub:
 `pip install git+https://github.com/mgrubisic/anaStruct.git`.
 
-See `dev-docs/` for full documentation (usage recipes in `dev-docs/SKILLS.md`) and
-`examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,
-`examples/ex_29_thermal_loadcombination.py` for runnable examples.
+See `dev-docs/` for the developer documentation: `dev-docs/README.md` is the entry point (map of
+the change set, workflow, architecture, checklists), usage recipes are in `dev-docs/SKILLS.md`,
+the state of the project in `dev-docs/MEMORY.md` and the technical notes in `dev-docs/SPOZNAJE.md`.
+Runnable examples: `examples/ex_27_imposed_displacement.py`, `examples/ex_28_thermal_load.py`,
+`examples/ex_29_thermal_loadcombination.py`.
 
 ## Installation
 
-For the actively developed version:
+For the actively developed version of upstream:
 ```
 $ pip install git+https://github.com/ritchie46/anaStruct.git
+```
+
+For this fork (see above):
+```
+$ pip install git+https://github.com/mgrubisic/anaStruct.git
 ```
 
 Or for a release:
@@ -170,11 +180,11 @@ ss.show_bending_moment()
 
 ```
 
-![](doc/source/img/examples/tower_bridge_struct.png)
+![](docs/source/img/examples/tower_bridge_struct.png)
 
-![](doc/source/img/examples/tower_bridge_displa.png)
+![](docs/source/img/examples/tower_bridge_displa.png)
 
-![](doc/source/img/examples/tower_bridge_moment.png)
+![](docs/source/img/examples/tower_bridge_moment.png)
 
 
 ```python

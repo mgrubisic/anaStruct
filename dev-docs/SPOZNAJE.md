@@ -1,7 +1,13 @@
 # SPOZNAJE — tehnički nalazi o anaStruct arhitekturi i ovoj implementaciji
 
-> Bilješke nastale tijekom implementacije imposed displacement + thermal load.
-> Namjena: da se sljedeći put ne mora nanovo otkrivati kako modul radi iznutra.
+> Bilješke nastale tijekom cijelog rada na forku (imposed displacement, thermal load, zglobovi i
+> opruge, izvijanje, naslijeđeni nedostaci upstreama). Namjena: da se sljedeći put ne mora nanovo
+> otkrivati kako modul radi iznutra i zašto je nešto promijenjeno. Ulazna točka za razvoj je
+> `README.md` (workflow, arhitektura, checklista), stanje projekta je u `MEMORY.md`.
+
+**Sadržaj:** 1 pipeline · 2 imposed displacement · 3 thermal load · 4 predznaci ·
+5 zamke · 6 diff prema upstreamu · 7 invarijante i cache-ovi · pregledi: prvi (Review nalazi),
+drugi, treći krug (naslijeđeni nedostaci, Copilot).
 
 ## 1. Mapa toka podataka (pipeline)
 
@@ -12,17 +18,24 @@ SystemElements.<load/support metode>          anastruct/fem/system.py
 solve()
   ├─ process_supports()          assembly.py — oslonci → 0 u displacement vektoru,
   │                              kompilacija konstitutivnih matrica za zglobove,
-  │                              NOVO: primjena loads_displacement
+  │                              NOVO: primjena loads_displacement; izvršava se samo kad je
+  │                              system_displacement_vector None (prvi solve / nakon izmjene modela)
   ├─ prep_matrix_forces()        assembly.py — loads_* → ekvivalentne čvorne sile
   │                              (system_force_vector) i element_primary_force_vector;
   │                              NOVO: apply_temperature_load()
-  ├─ assemble_system_matrix()    globalna K + opruge iz system_spring_map
+  ├─ assemble_system_matrix()    globalna K + opruge iz system_spring_map; indeks stupnja
+  │                              slobode čvora je dof_index(system, node_id) (ID-jevi imaju rupe)
   ├─ process_conditions()        brisanje obustavljenih DOF-ova;
   │                              NOVO: korekcija F_f -= K_fr @ u_r
   ├─ np.linalg.solve()           reducirani sustav
   ├─ scatter                     NOVO: upis zadanih vrijednosti na prescribed indekse
   └─ postprocess.py              element_force_vector = K_el @ u_el, zatim
                                  node_results → reaction_forces → element_results
+
+nelinearno (mp=): solver.stiffness_adaptation — petlja oko gornjeg toka; krutost plastičnog
+zgloba (opruga u seriji) se iterira sekantom dok moment kraja ne postane mp
+drugi red:       solver.second_order_step — prvi red → N0 → K + Kg(N0); faktor izvijanja iz
+                 K0 x = -λ Kg x (Cholesky)
 ```
 
 Ključno svojstvo dizajna: **čvorne rezultate dobivamo iz elemenata**
@@ -158,6 +171,13 @@ Ostale kvarkije:
    (kombinacija je jedan račun, `_add_loads`); ostavljeni su zbog kompatibilnosti API-ja
    (`Element.__add__` zbraja i `temperature_load`).
 
+6. **Windows / Git:** `git add` upozorava "LF will be replaced by CRLF" (autocrlf) — bezopasno.
+   `*.zip` je u `.gitignore` (u rootu je arhiva upstreama). CI (`test.yaml`) radi samo na pull
+   requestovima, pa se `black`/`pylint`/`mypy`/`pytest` moraju pokrenuti lokalno prije pusha na
+   `master`; lokalne verzije alata su starije od pinova u `pyproject.toml`.
+7. **Skripte za izmjenu datoteka:** složeni višelinijski Python/Markdown u shell heredocu zna
+   pasti na navodnicima; skriptu napisati u datoteku alatom za pisanje pa je pokrenuti.
+
 ## 6. Reproducibilni diff prema upstreamu
 
 Posljednji upstream commit prije forka je `f85d14a`:
@@ -167,13 +187,15 @@ git diff f85d14a --stat
 git diff f85d14a -- anastruct/fem/system.py
 ```
 
-Fork je značajno veći od prve verzije (dodaci + ispravci opisani u ovoj datoteci): oko 12
-izvornih datoteka i 6 novih testnih datoteka; sve promjene ponašanja prema upstreamu navedene
-su u ovoj datoteci i u korisničkoj dokumentaciji.
+Fork je značajno veći od prve verzije (dodaci + ispravci opisani u ovoj datoteci): oko 13
+izvornih datoteka i 7 novih testnih datoteka (430 testova ukupno); mapa promjena po datotekama je
+u `README.md`. Sve promjene ponašanja prema upstreamu navedene su u ovoj datoteci, u korisničkoj
+dokumentaciji (`docs/source`) i u popisu u korijenskom `README.md`.
 
 ## Review nalazi (Sonnet 5.5 + Opus 5.5, naknadni pregled)
 
-- **Testovi:** u ovom okruženju (pytest-describe 3.1.0) `context_*` funkcije
+- **Testovi:** u ovom okruženju (pytest-describe 3.1.0; `pyproject.toml` pinira 3.2.0, nije
+  provjereno ponaša li se isto) `context_*` funkcije
   postaju samostalni testovi, a ugniježđeni `it_*` se nikad ne izvrše. Prvotnih
   13 testova zato nije provjeravalo asercije; testovi su prepisani u obične
   `test_*` funkcije (svi prolaze). Isti obrazac koriste i upstream testovi
@@ -205,9 +227,9 @@ su u ovoj datoteci i u korisničkoj dokumentaciji.
   `det_moment/det_shear` hranio s `constitutive_matrix[i][i] * 1e6`, što je
   zanemarivalo konačne opruge (moment ostao kao kod upetog kraja). Sada se koristi
   `Element.end_rotational_stiffness`: 0 za zglob, `k` za oprugu, `D*1e6` za kruti
-  kraj. Za plastificirane krajeve (`nodes_plastic`) vrijedi stara formula iz
-  trenutne (skalirane) matrice da iteracija konvergira prema `mp`; rešetkasti
-  elementi imaju (0, 0) (inače krivi posmici kod trapeznog opterećenja).
+  kraj. Plastični zglob je opruga u seriji (treći krug, niže) i ulazi u istu
+  formulu kao korisnikova opruga (`_effective_springs`); rešetkasti elementi imaju (0, 0)
+  (inače krivi posmici kod trapeznog opterećenja).
 - **`discretize()` (ispravljeno):** upstream je pretpostavljao lanac elemenata
   (`(id-1)*n+1` za čvorove, q-opterećenje samo na podelement s originalnim ID-jem,
   isti `spring` rječnik na svim podelementima, kosi valjkasti oslonci i eksplicitni
@@ -311,9 +333,9 @@ su u ovoj datoteci i u korisničkoj dokumentaciji.
   - `buckling_factor` se briše pri izmjeni modela; `second_order_step` prvo vraća krutost
     bez starog `Kg`.
 - **Poznato, naslijeđeno iz upstreama (nije mijenjano):** vidi popis "Ostale kvarkije"
-  u sekciji 4; `add_multiple_elements(..., spring={1: 0, 2: 0})` daje svakom podelementu oba
-  otpuštanja;
-  `loads_q` kombinacije (samo za crtanje) sadrži zadnji slučaj.
+  u sekciji 4 i kraj ove datoteke; `add_multiple_elements(..., spring={1: 0, 2: 0})` daje
+  svakom podelementu oba otpuštanja; `loads_q` kombinacije (samo za crtanje) sadrži zadnji
+  slučaj.
 - Krivulje `deflection`/`extension` elementa ne uključuju slobodnu toplinsku
   zakrivljenost/istezanje (dokumentirano u docstringu).
 
@@ -413,3 +435,32 @@ Još uvijek **nije mijenjano** (rubni slučajevi, reproducirani i na upstreamu):
 - Krivulje `deflection`/`extension` ne uključuju slobodnu toplinsku zakrivljenost (dokumentirano).
 - Član s zglobovima na oba kraja ne izvija između čvorova bez `discretize_kwargs` (dokumentirano).
 - Cython (`celements`) ne koristi plastični zglob ni oslonce, pa promjene ne dira.
+
+## 7. Invarijante i cache-ovi (što paziti pri svakoj izmjeni)
+
+- **Indeks stupnja slobode** je uvijek `dof_index(system, node_id)` (`util.py`), nikad
+  `(id - 1) * 3`: ID-jevi čvorova imaju rupe nakon `remove_element`. Rječnik `_node_index` se
+  gradi lijeno i **mora se postaviti na `None`** svaki put kad se mijenja `node_map`
+  (`append_node_id`, `det_node_ids`, `add_node`, `remove_node_id`).
+- **Novi ID čvora** je `max(postojeći) + 1` (`det_node_ids`, `add_node`), nikad `len(...) + 1`.
+- **Čvorovi se uspoređuju po ID-ju**, ne po identitetu: `solve()` zamjenjuje objekte u `node_map`
+  kopijama s rezultatima (`postprocess.node_results_system`), pa popisi oslonaca drže zastarjele
+  objekte (`remove_node_id` filtrira po `n.id`).
+- **`_invalidate_solution()`** (iz `add_element`, `remove_element`, `add_support_*`,
+  `add_internal_hinge`) briše rješenje, masku upetih stupnjeva, zadane pomake, faktor izvijanja i
+  plastično stanje. Novi izvor stanja na sustavu mora ući ovamo.
+- **Plastično stanje elementa** (`nodes_plastic`, `plastic_stiffness`) postavlja se isključivo preko
+  `Element.update_stiffness` i briše preko `Element.reset_plastic` / `_reset_plastic_state`;
+  svaki `solve` kreće od elastične krutosti. Konstante: `PLASTIC_INITIAL_STIFFNESS = 100`,
+  `PLASTIC_ELASTIC_STIFFNESS = 1e6`, `PLASTIC_MECHANISM_STIFFNESS = 1e-6` (višekratnici 4EI/l).
+- **`remove_loads(dead_load=True)`** ne smije brisati `loads_dead_load`: taj skup (svi elementi)
+  pokreće i obradu q-opterećenja.
+- **Novo opterećenje** mora: (1) imati `loads_*` rječnik, (2) biti obrađeno u `assembly.py`,
+  (3) biti preneseno u `discretize()` i `insert_node()`, (4) biti očišćeno u `remove_loads()`,
+  (5) imati metodu u `LoadCase` i biti zbrojeno u `_add_loads` (`util/load.py`), (6) imati test u
+  `LoadCombination` (dvostruko brojanje je tipična greška) i test u `invert_y_loads=False`.
+- **Neovisna provjera:** novi rezultat usporediti s analitičkom vrijednošću ili neovisnim
+  računom (npr. gradnja ekvivalentnog modela od nule), ne samo s drugim anaStruct rezultatom —
+  tako su pronađene sve greške predznaka.
+- **Cython** (`anastruct/fem/cython/`) nije prilagođen: ne zna za plastični zglob kao oprugu ni za
+  nove oslonce.
