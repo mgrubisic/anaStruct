@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -14,6 +14,22 @@ if TYPE_CHECKING:
 def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
     """Identify internal hinges, set their hinge status
 
+    A node is an internal hinge when it is declared as one (`add_internal_hinge`), or
+    when every element that meets in the node has a hinge (`{1: 0}` or `{2: 0}`) at that
+    node, so nothing can transfer a moment. The rotation of the node is then
+    restrained and all the elements are released at the node.
+
+    If one or more elements are rigidly connected in the node, they share the rotation
+    of the node, which is solved like any other degree of freedom (a moment load or a
+    rotational support at the node is carried by the rigid elements), and only the
+    elements with a hinge are released, through their own springs. A node with one
+    rigid element and released elements therefore behaves as a hinge for the rigid
+    element too, as long as the node carries no moment load or rotational support.
+
+    The status follows from the springs as given by the user, which are never
+    modified here, and it is determined again every time, so it does not depend on
+    the order in which the elements were added.
+
     Args:
         system (SystemElements): System in which the node is located
         node_id (int): Id of the node in the system
@@ -21,39 +37,25 @@ def check_internal_hinges(system: "SystemElements", node_id: int) -> None:
 
     node = system.node_map[node_id]
 
-    hinges = []
-    for el_id in node.elements:
-        el = system.element_map[el_id]
-        assert el.springs is not None
-        if node_id == el.node_id1 and 1 in el.springs and el.springs[1] == 0:
-            hinges.append(1)
-        elif node_id == el.node_id2 and 2 in el.springs and el.springs[2] == 0:
-            hinges.append(1)
-        else:
-            hinges.append(0)
+    # the elements per node of the system (node.elements is emptied by the
+    # post-processing, which replaces the node objects)
+    released = []
+    for el in system.node_element_map.get(node_id, []):
+        end: Literal[1, 2] = 1 if node_id == el.node_id1 else 2
+        released.append((el.springs or {}).get(end) == 0)
 
-    # If at least one element is connected
-    # and no more than one element is rigidly connected
-    if (1 < len(hinges) <= 1 + sum(hinges)) or (len(hinges) == 1 and sum(hinges) == 1):
+    is_hinge = node_id in system._explicit_internal_hinges or (
+        len(released) > 0 and all(released)
+    )
+
+    # match by node id: the node objects in the node map are replaced by the
+    # post-processing, so an object from an earlier solve is not the current one
+    system.internal_hinges[:] = [
+        hinge for hinge in system.internal_hinges if hinge.id != node_id
+    ]
+    if is_hinge:
         system.internal_hinges.append(node)
-
-    if node in system.internal_hinges:
-        node.hinge = True
-
-        # If the elements aren't already all hinged, then set them to be
-        if len(hinges) - sum(hinges) >= 1:
-            for el_id in node.elements:
-                el = system.element_map[el_id]
-                assert el.springs is not None
-                if node_id == el.node_id1 and not (
-                    1 in el.springs and el.springs[1] == 0
-                ):
-                    el.springs.update({1: 0})
-                if node_id == el.node_id2 and not (
-                    2 in el.springs and el.springs[2] == 0
-                ):
-                    el.springs.update({2: 0})
-                system.element_map[el_id].springs = el.springs
+    node.hinge = is_hinge
 
 
 def append_node_id(
@@ -105,8 +107,10 @@ def remove_node_id(
         system.supports_hinged.remove(node)
     if node in system.supports_rotational:
         system.supports_rotational.remove(node)
-    if node in system.internal_hinges:
-        system.internal_hinges.remove(node)
+    system.internal_hinges[:] = [
+        hinge for hinge in system.internal_hinges if hinge.id != node_id
+    ]
+    system._explicit_internal_hinges.discard(node_id)
     if node in system.supports_roll:
         ind = system.supports_roll.index(node)
         system.supports_roll.remove(node)
@@ -313,6 +317,8 @@ def force_elements_orientation(
             assert isinstance(
                 spring, dict
             ), "The spring parameter should be a dictionary."
+            # do not modify the dictionary of the caller, it may be shared
+            spring = dict(spring)
             if 1 in spring and 2 in spring:
                 spring[1], spring[2] = spring[2], spring[1]
             elif 1 in spring:
@@ -321,6 +327,7 @@ def force_elements_orientation(
                 spring[1] = spring.pop(2)
 
         if mp is not None:
+            mp = dict(mp)
             if 1 in mp and 2 in mp:
                 mp[1], mp[2] = mp[2], mp[1]
             elif 1 in mp:

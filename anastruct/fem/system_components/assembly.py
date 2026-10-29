@@ -127,8 +127,7 @@ def apply_perpendicular_q_load(system: "SystemElements") -> None:
         if q_perpendicular == 0 and qi_perpendicular == 0:
             continue
 
-        kl = element.constitutive_matrix[1][1] * 1e6
-        kr = element.constitutive_matrix[2][2] * 1e6
+        kl, kr = element.end_rotational_stiffness
 
         # minus because of systems positive rotation
         left_moment = det_moment(
@@ -426,7 +425,9 @@ def process_supports(system: "SystemElements") -> None:
                 "Invalid parameters",
                 f"Imposed displacements on inclined roller support {node_id} are not supported.",
             )
-        if phi_z is not None and system.node_map[node_id] in system.internal_hinges:
+        if phi_z is not None and any(
+            hinge.id == node_id for hinge in system.internal_hinges
+        ):
             raise FEMException(
                 "Invalid parameters",
                 f"A rotation cannot be imposed on internal hinge {node_id}.",

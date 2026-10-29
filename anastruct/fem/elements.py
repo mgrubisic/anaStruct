@@ -201,6 +201,35 @@ class Element:
         """Compile the kinematic matrix of the element"""
         self.kinematic_matrix = kinematic_matrix(self.a1, self.a2, self.l)
 
+    @property
+    def end_rotational_stiffness(self) -> Tuple[float, float]:
+        """Rotational stiffness of the connections at the two element ends
+
+        These are the stiffnesses that determine the fixed-end forces due to a
+        distributed load: 0 for a hinge, the spring stiffness `k` for a rotational
+        spring, and (practically) infinite for a rigid connection. A plastic hinge
+        follows the (reduced) stiffness of the constitutive matrix, so that the
+        end moment converges to the plastic moment. A truss element carries no
+        moment, so both ends are hinges.
+
+        Returns:
+            Tuple[float, float]: Rotational stiffness at node 1 and node 2
+        """
+        if self.type == "truss":
+            return 0.0, 0.0
+
+        stiffness = []
+        for end in (1, 2):
+            released = self.constitutive_matrix[end][end] == 0
+            spring = self.springs.get(end) if self.springs else None
+            if released:
+                stiffness.append(0.0)
+            elif spring and not self.nodes_plastic[end - 1]:
+                stiffness.append(float(spring))
+            else:
+                stiffness.append(float(self.constitutive_matrix[end][end]) * 1e6)
+        return stiffness[0], stiffness[1]
+
     def compile_constitutive_matrix(self, initial: bool = False) -> None:
         """Compile the constitutive matrix of the element"""
         if initial:  # if element is just being created
@@ -337,45 +366,71 @@ def constitutive_matrix(
 ) -> np.ndarray:
     """Generate the constitutive matrix of an element
 
+    The matrix relates the element deformations (axial elongation and the two end
+    rotations relative to the chord) to the element forces (axial force and the two end
+    moments). The end releases are taken into account as follows:
+
+    * A hinge (a hinge node, or a rotational spring with stiffness 0) carries no moment.
+      Its rotation is eliminated by static condensation (Schur complement) of the
+      bending stiffness [[4, -2], [-2, 4]] * EI / l. An element with one hinge therefore
+      has a rotational stiffness of 3 EI / l at the other end, and an element with two
+      hinges has no bending stiffness.
+    * A rotational spring k at an end acts in series with the element, so the
+      flexibilities add: C = C_element + diag(1 / k1, 1 / k2). The result is exact for
+      any k, from k -> 0 (hinge) to k -> infinity (rigid connection).
+    * A hinge prevails over a spring at the same end.
+
     Args:
         EA (float): Axial stiffness
         EI (float): Bending stiffness
         l (float): Length
-        spring (Optional[Spring]): Spring stiffnesses at node 1 and node 2
+        spring (Optional[Spring]): Rotational spring stiffnesses at node 1 and node 2
+            (0 is a hinge)
         node_1_hinge (Optional[bool]): Whether node 1 is a hinge
         node_2_hinge (Optional[bool]): Whether node 2 is a hinge
 
     Returns:
         np.ndarray: Constitutive matrix of the element
     """
-    matrix = np.array(
-        [[EA / l, 0, 0], [0, 4 * EI / l, -2 * EI / l], [0, -2 * EI / l, 4 * EI / l]]
-    )
+    matrix = np.zeros((3, 3))
+    matrix[0][0] = EA / l
 
-    if node_1_hinge or (spring is not None and 1 in spring and spring[1] == 0):
-        matrix[1][1] = matrix[1][2] = matrix[2][1] = 0
+    # bending part, relating the end rotations (relative to the chord) to the end moments
+    bending = EI / l * np.array([[4.0, -2.0], [-2.0, 4.0]])
 
-    if node_2_hinge or (spring is not None and 2 in spring and spring[2] == 0):
-        matrix[1][2] = matrix[2][1] = matrix[2][2] = 0
+    # an end is released (hinge) when it is a hinge node or has a rotational spring
+    # with stiffness 0
+    spring = spring or {}
+    spring_stiffness = [spring.get(1), spring.get(2)]  # None: no spring
+    released = [
+        bool(node_1_hinge) or spring_stiffness[0] == 0,
+        bool(node_2_hinge) or spring_stiffness[1] == 0,
+    ]
+    spring_flexibility = [1 / k if k else 0.0 for k in spring_stiffness]
+    active = [i for i in (0, 1) if not released[i]]
+    condensed = [i for i in (0, 1) if released[i]]
 
-    if spring is not None:
-        # stiffness matrix K:
-        # [[ k, k ]
-        # [ k, k ]]
+    if active:
+        # static condensation of the released rotations: the moment at a hinge is zero,
+        # so the stiffness of the remaining rotations is the Schur complement
+        # (a fixed-hinge element has 3EI/l instead of 4EI/l)
+        stiffness = bending[np.ix_(active, active)]
+        if condensed:
+            stiffness = stiffness - (
+                bending[np.ix_(active, condensed)]
+                @ np.linalg.inv(bending[np.ix_(condensed, condensed)])
+                @ bending[np.ix_(condensed, active)]
+            )
 
-        # flexibility matrix C:
-        # [[ c, c ]    =   [[ 1/k, 1/k ]
-        # `[ c, c ]]       [  1/k, 1/k ]]
+        # rotational springs at the ends act in series with the (condensed) element:
+        # the flexibilities add, C = C_element + diag(1 / k1, 1 / k2)
+        flexibility = np.linalg.inv(stiffness) + np.diag(
+            [spring_flexibility[i] for i in active]
+        )
+        stiffness = np.linalg.inv(flexibility)
 
-        # flexibility matrix c + springs on both sides:
-        # [[ c11 + 1/k1, c12       ]
-        # [  c21      , c21 + 1/k2 ]]
-        if 1 in spring and spring[1] != 0:  # not hinge
-            matrix[1][1] = 1 / (1 / matrix[1][1] + 1 / spring[1])
-            matrix[2][1] = 1 / (1 / matrix[2][1] + 1 / spring[1])
-        if 2 in spring and spring[2] != 0:  # not hinge
-            matrix[2][1] = 1 / (1 / matrix[2][1] + 1 / spring[2])
-            matrix[1][2] = 1 / (1 / matrix[1][2] + 1 / spring[2])
+        rows = [i + 1 for i in active]
+        matrix[np.ix_(rows, rows)] = stiffness
 
     return matrix
 
