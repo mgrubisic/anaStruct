@@ -91,8 +91,11 @@ class SystemElements:
             EI (float, optional): Bending stiffness. Defaults to 5e3.
             load_factor (float, optional): Load factor by which to multiply all loads. Defaults to 1.0.
             mesh (int, optional): Number of mesh elements, only used for plotting. Defaults to 50.
-            invert_y_loads (bool, optional): Whether to invert the y-direction of the loads, such that a positive
-                Fy load will be in the direction of gravity. Defaults to True.
+            invert_y_loads (bool, optional): Whether to invert the y-direction of the loads. The y-axis of the
+                calculation points down, so with the default (True) the loads follow the y-axis of the structure:
+                a positive Fy (and q, and imposed uy) acts in the +y direction (upwards in a drawing with y up) and a
+                downward load is negative. If False, a positive Fy acts in the -y direction (the direction of
+                gravity in such a drawing). Defaults to True.
         """
         # init object
         self.post_processor = post_sl(self)
@@ -162,6 +165,9 @@ class SystemElements:
             {}
         )  # element ids with a temperature load {element_id: (alpha * delta_t, alpha * delta_t_gradient / h)}
 
+        # boolean mask of the restrained degrees of freedom, set once by process_supports
+        self._restrained_dofs: Optional[np.ndarray] = None
+
         # map of system matrix indexes to imposed (non-zero) displacement values,
         # processed in system_components.assembly.process_supports
         self._prescribed_displacements: Dict[int, float] = {}
@@ -189,6 +195,27 @@ class SystemElements:
         self.reduced_force_vector: Optional[np.ndarray] = None
         self.reduced_system_matrix: Optional[np.ndarray] = None
         self._vertices: Dict[Vertex, int] = {}  # maps vertices to node ids
+
+    def _invalidate_solution(self) -> None:
+        """A change of the model (supports, elements) makes the solution out of date.
+
+        The supports are processed once, at the first solve, and the displacement vector holds
+        the solution of the previous calculation. After a solve both are reset, so that the
+        next solve processes the supports of the changed model, and the elements start with
+        their elastic stiffness again.
+        """
+        if self.system_displacement_vector is None:
+            return
+        self.system_displacement_vector = None
+        self._restrained_dofs = None
+        self._prescribed_displacements = {}
+        self.buckling_factor = None
+        for element in self.element_map.values():
+            element.nodes_plastic = [False, False]
+            # the node copies of the post-processing hold the hinge status of the last solve
+            element.refresh_nodes(self.node_map)
+            element.compile_constitutive_matrix()
+            element.compile_stiffness_matrix()
 
     @property
     def id_last_element(self) -> int:
@@ -333,6 +360,14 @@ class SystemElements:
                 The two nodes of the element or the next node of the element.
             EA (Optional[float], optional): Axial stiffness of the new element. Defaults to None.
 
+        Note:
+            A truss element has no bending stiffness, so a bar of a truss does not buckle between
+            its nodes in a second order calculation. To determine the buckling load of a bar,
+            model it as an element with hinges at both ends, `add_element(location, EA=EA, EI=EI,
+            spring={1: 0, 2: 0})`: it behaves like a truss element, and `discretize()` divides it
+            with the hinges at its ends only, see `solve(geometrical_non_linear=True,
+            discretize_kwargs=...)`.
+
         Returns:
             int: ID of the new element
         """
@@ -425,6 +460,8 @@ class SystemElements:
         if element_type == "truss":
             EI = 1e-14
 
+        self._invalidate_solution()
+
         # add the element number
         self.count += 1
 
@@ -495,6 +532,7 @@ class SystemElements:
         Args:
             element_id (int): ID of the element to remove
         """
+        self._invalidate_solution()
         element = self.element_map[element_id]
         node_id1 = element.node_id1
         node_id2 = element.node_id2
@@ -909,8 +947,11 @@ class SystemElements:
             force_linear (bool, optional): Force a linear calculation, even when the system has non-linear nodes.
                 Defaults to False.
             verbosity (int, optional): Log calculation outputs (0), or silence (1). Defaults to 0.
-            max_iter (int, optional): Maximum allowed iterations. Defaults to 200.
+            max_iter (int, optional): Maximum allowed iterations of the plastic iteration of non-linear nodes.
+                A FEMException is raised if it does not converge (the structure may be a mechanism). Defaults to 200.
             geometrical_non_linear (int, optional): Calculate second order effects and determine the buckling factor.
+                This can be combined with non linear nodes (`mp=`): every step of the plastic iteration is then
+                a second order analysis, and the buckling factor is that of the elastic structure.
                 Defaults to False.
 
         Optional Keyword Args:
@@ -957,8 +998,15 @@ class SystemElements:
         ), "There are no forces on the structure"
 
         if self.non_linear and not force_linear:
+            if geometrical_non_linear:
+                # the buckling factor is that of the elastic structure
+                self.buckling_factor = (
+                    system_components.solver.determine_buckling_factor(
+                        self, kwargs.get("discretize_kwargs", None)
+                    )
+                )
             return system_components.solver.stiffness_adaptation(
-                self, verbosity, max_iter
+                self, verbosity, max_iter, bool(geometrical_non_linear)
             )
 
         system_components.assembly.assemble_system_matrix(self)
@@ -1065,6 +1113,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_hinged.append(self.node_map[id_])
+            self._invalidate_solution()
 
     def add_support_rotational(self, node_id: Union[int, Sequence[int]]) -> None:
         """Model a rotational support at a given node.
@@ -1080,6 +1129,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_rotational.append(self.node_map[id_])
+            self._invalidate_solution()
 
     def add_internal_hinge(self, node_id: Union[int, Sequence[int]]) -> None:
         """Model a internal hinge at a given node.
@@ -1099,6 +1149,7 @@ class SystemElements:
             # the node is a hinge from now on, also when no element is released
             self._explicit_internal_hinges.add(id_)
             system_components.util.check_internal_hinges(self, id_)
+            self._invalidate_solution()
 
     def add_support_roll(
         self,
@@ -1151,6 +1202,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_roll.append(self.node_map[id_])
+            self._invalidate_solution()
             self.supports_roll_direction.append(direction_i)
             self.supports_roll_rotate.append(rotate_)
 
@@ -1174,6 +1226,7 @@ class SystemElements:
 
             # add the support to the support list for the plotter
             self.supports_fixed.append(self.node_map[id_])
+            self._invalidate_solution()
 
     def add_support_spring(
         self,
@@ -1202,6 +1255,7 @@ class SystemElements:
         else:
             resolved_node_id = _negative_index_to_id(node_id, self.node_map.keys())
         self.supports_spring_args.append((resolved_node_id, translation, k, roll))
+        self._invalidate_solution()
         # The stiffness of the spring is added in the system matrix at the location that
         # represents the node and the displacement.
         if not isinstance(node_id, collections.abc.Iterable):
@@ -1354,8 +1408,10 @@ class SystemElements:
             rotation (Union[float, Sequence[float]], optional): Rotate the force clockwise by the given
                 angle in degrees. Defaults to 0.0.
 
-        Raises:
-            FEMException: Point loads may not be placed at the location of inclined roller supports
+        Note:
+            The load may be placed at the node of an inclined roller support: the degrees of
+            freedom of that node are in the system of the support, and the load is transformed to
+            it when solving. The reaction of such a roller is normal to its free direction.
         """
         if isinstance(Fy, (int, float)) and Fy == 0.0 and Fz is not None:
             Fy = Fz  # for backwards compatibility with old y/z axes behaviour
@@ -1367,14 +1423,6 @@ class SystemElements:
 
         for i, node_idi in enumerate(node_id):
             id_ = _negative_index_to_id(node_idi, self.node_map.keys())
-            if (
-                id_ in self.inclined_roll
-                and np.mod(self.inclined_roll[id_], np.pi / 2) != 0
-            ):
-                raise FEMException(
-                    "StabilityError",
-                    "Point loads may not be placed at the location of inclined roller supports",
-                )
             self.plotter.max_system_point_load = max(
                 self.plotter.max_system_point_load, (Fx[i] ** 2 + Fy[i] ** 2) ** 0.5
             )
@@ -1420,7 +1468,11 @@ class SystemElements:
         so a support restraining the respective degree of freedom is required. The sign
         conventions follow the corresponding loads: `ux` acts like a positive `Fx` point
         load, `uy` like a positive `Fy` point load (with the default `invert_y_loads=True`
-        a positive `uy` is downwards) and `phi_z` like a positive `Tz` moment load.
+        a positive `uy` is in the +y direction, upwards, so a settlement is a negative
+        `uy`) and `phi_z` like a positive `Tz` moment load. Note that the getters report
+        rotations positive in the clockwise direction, so an imposed `phi_z` is reported
+        with the opposite sign by `get_node_displacements`, like the rotation caused by a
+        moment load `Tz`.
         Like the loads, imposed displacements are multiplied by the `load_factor`, so
         that they can be superposed in a :class:`.LoadCombination` (see
         :meth:`.LoadCase.imposed_displacement`).
@@ -1443,8 +1495,11 @@ class SystemElements:
             FEMException: If the system has already been solved, if the node is an
                 inclined roller support, or if a rotation is imposed on an internal
                 hinge
-            FEMException: If the degree of freedom is not restrained by a support
-                (raised when solving)
+            FEMException: If the degree of freedom is not restrained by a support (raised when
+                solving). A displacement can only be imposed in a direction that a support restrains:
+                not in the free direction of a roller, not for the rotation of a hinged support, and
+                not for an inclined roller, which restrains only the translation normal to its free
+                direction. The message explains which of these applies.
 
         Note:
             Impose the displacements before the first `solve()`, just like supports.
@@ -1465,7 +1520,9 @@ class SystemElements:
         if id_ in self.inclined_roll:
             raise FEMException(
                 "Invalid parameters",
-                "Imposed displacements on inclined roller supports are not supported.",
+                system_components.util.describe_unrestrained_dof(
+                    self, id_, 1 if ux is not None else 2 if uy is not None else 3
+                ),
             )
         if phi_z is not None and any(hinge.id == id_ for hinge in self.internal_hinges):
             raise FEMException(
@@ -1501,9 +1558,11 @@ class SystemElements:
         faces of the element), causes a free curvature
         `alpha * delta_t_gradient / h`, with `h` the section depth. A positive
         gradient corresponds to a warmer upper face (the face pointing towards the
-        positive global y-direction for a horizontal element), so that a cantilever
-        fixed at its first node deflects downwards (positive `uy` with the default
-        `invert_y_loads=True`). In general the warmer face is the face on the left
+        positive global y-direction for a horizontal element): the upper fibres are
+        longer, so a cantilever fixed at its first node deflects downwards (towards the
+        colder face, a negative `uy` in `get_node_displacements`) and a simply supported
+        beam cambers upwards. The sign does not depend on `invert_y_loads`. In general
+        the warmer face is the face on the left
         of the element when looking from its first to its second node. Elements that
         are not vertical are oriented from left to right, so this is their upper
         face; for vertical elements it depends on the order in which the end points

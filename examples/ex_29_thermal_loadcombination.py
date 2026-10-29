@@ -21,7 +21,7 @@ lc_gradient.thermal_load(
 )
 
 lc_traffic = LoadCase("traffic")
-lc_traffic.q_load(q=10, element_id=[1, 2])  # positive q acts downwards by default
+lc_traffic.q_load(q=-10, element_id=[1, 2])  # negative q acts downwards by default
 
 combination = LoadCombination("SLS")
 combination.add_load_case(lc_thermal, factor=1.0)

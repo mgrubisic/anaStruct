@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, List, Tuple
 import numpy as np
 
 from anastruct.basic import FEMException
+from anastruct.fem.system_components.util import describe_unrestrained_dof
 from anastruct.fem.elements import det_axial, det_moment, det_shear
 
 if TYPE_CHECKING:
@@ -52,10 +53,15 @@ def apply_temperature_load(system: "SystemElements") -> None:
     """Apply a temperature load to the system
 
     The equivalent nodal forces are derived from the free thermal eigen strains of
-    the element: e0 = [alpha * delta_t * l, kappa * l / 2, kappa * l / 2], with
-    kappa = alpha * delta_t_gradient / h the free thermal curvature. The fixed-end
-    forces are obtained with the element's own kinematic and constitutive matrices,
-    so (internal) hinges and springs at the element ends are accounted for
+    the element: e0 = [alpha * delta_t * l, -kappa * l / 2, -kappa * l / 2], with
+    kappa = alpha * delta_t_gradient / h the free thermal curvature. The sign of the
+    curvature follows from the kinematic matrix: the relative end rotations are positive
+    for a curvature that bends the element towards its right-hand side (looking from
+    its first to its second node), which is the side of the colder face. A positive
+    gradient is a warmer face on the left (the upper face of a horizontal element), so
+    the free end of a cantilever bends towards the colder face. The fixed-end
+    forces are obtained with the element's own kinematic and condensed constitutive
+    matrices, so (internal) hinges and springs at the element ends are accounted for
     automatically.
 
     Args:
@@ -67,7 +73,7 @@ def apply_temperature_load(system: "SystemElements") -> None:
             continue
 
         e0 = np.array(
-            [strain * element.l, curvature * element.l / 2, curvature * element.l / 2]
+            [strain * element.l, -curvature * element.l / 2, -curvature * element.l / 2]
         )
         if element.type == "truss":
             e0[1] = e0[2] = 0.0
@@ -104,6 +110,14 @@ def apply_point_load(system: "SystemElements") -> None:
     """
     for node_id in system.loads_point:
         Fx, Fy = system.loads_point[node_id]
+        if node_id in system.inclined_roll:
+            # The degrees of freedom of a node with an inclined roller support are in the
+            # system of the support, rotated by delta with respect to the global system
+            # (u_global = R(delta) u_support, see the kinematic matrix), so the load
+            # is given in that system as well: f_support = R(delta)^T f_global.
+            delta = system.inclined_roll[node_id]
+            cos_d, sin_d = math.cos(delta), math.sin(delta)
+            Fx, Fy = cos_d * Fx + sin_d * Fy, -sin_d * Fx + cos_d * Fy
         # system force vector.
         set_force_vector(
             system,
@@ -324,14 +338,19 @@ def process_conditions(system: "SystemElements") -> None:
         system (SystemElements): System to be processed
     """
     indexes = []
+    system._remainder_indexes = []
     # remove the unsolvable values from the matrix and vectors
     assert system.shape_system_matrix is not None
     assert system.system_displacement_vector is not None
+    # The restrained degrees of freedom are determined once, in process_supports. The
+    # displacement vector can not be used again after a solve: it then holds the
+    # solution, and a degree of freedom that is exactly 0 (e.g. the transverse
+    # displacements of a column under an axial load) is not a restrained one.
+    restrained = system._restrained_dofs
+    if restrained is None:
+        restrained = system.system_displacement_vector == 0
     for i in range(system.shape_system_matrix):
-        if (
-            system.system_displacement_vector[i] == 0
-            or i in system._prescribed_displacements
-        ):
+        if restrained[i] or i in system._prescribed_displacements:
             indexes.append(i)
         else:
             system._remainder_indexes.append(i)
@@ -389,6 +408,8 @@ def process_supports(system: "SystemElements") -> None:
     for node in system.internal_hinges:
         set_displacement_vector(system, [(node.id, 3)])
         for el in system.node_element_map[node.id]:
+            # the node copies of the post-processing hold the hinge status of an earlier solve
+            el.refresh_nodes(system.node_map)
             el.compile_constitutive_matrix()
             el.compile_stiffness_matrix()
 
@@ -423,7 +444,9 @@ def process_supports(system: "SystemElements") -> None:
         if node_id in system.inclined_roll:
             raise FEMException(
                 "Invalid parameters",
-                f"Imposed displacements on inclined roller support {node_id} are not supported.",
+                describe_unrestrained_dof(
+                    system, node_id, 1 if ux is not None else 2 if uy is not None else 3
+                ),
             )
         if phi_z is not None and any(
             hinge.id == node_id for hinge in system.internal_hinges
@@ -439,8 +462,12 @@ def process_supports(system: "SystemElements") -> None:
             if np.isnan(system.system_displacement_vector[index]):
                 raise FEMException(
                     "StabilityError",
-                    f"An imposed displacement at node {node_id} in direction {direction} "
-                    "requires a support restraining that degree of freedom.",
+                    describe_unrestrained_dof(system, node_id, direction),
                 )
             system.system_displacement_vector[index] = displacement
             system._prescribed_displacements[index] = displacement
+
+    # the restrained degrees of freedom (value 0, or an imposed displacement)
+    system._restrained_dofs = system.system_displacement_vector == 0
+    for index in system._prescribed_displacements:
+        system._restrained_dofs[index] = True

@@ -230,6 +230,20 @@ class Element:
                 stiffness.append(float(self.constitutive_matrix[end][end]) * 1e6)
         return stiffness[0], stiffness[1]
 
+    def refresh_nodes(self, node_map: Dict[int, "Node"]) -> None:
+        """Use the current nodes of the system instead of the copies of the post-processing
+
+        The post-processing replaces the nodes of the element by copies with the results. They
+        also hold the hinge status at that time, which the constitutive matrix depends on.
+
+        Args:
+            node_map (Dict[int, Node]): Nodes of the system
+        """
+        self.node_map = {
+            self.node_id1: node_map[self.node_id1],
+            self.node_id2: node_map[self.node_id2],
+        }
+
     def compile_constitutive_matrix(self, initial: bool = False) -> None:
         """Compile the constitutive matrix of the element"""
         if initial:  # if element is just being created
@@ -267,9 +281,31 @@ class Element:
         """Compile the geometric non-linear stiffness matrix of the element"""
         self.compile_stiffness_matrix()
         assert self.N_1 is not None
-        self.stiffness_matrix += geometric_stiffness_matrix(
-            self.l, self.N_1, self.a1, self.a2
+        geometric = geometric_stiffness_matrix(
+            self.l, self.N_1, self.a1, self.a2, self.angle, self.type == "truss"
         )
+
+        # The geometric stiffness is derived for the displacement field of the beam
+        # itself. At a hinge or a rotational spring the rotation of the beam end differs
+        # from the rotation of the node: the relative end rotations of the beam are
+        # phi_b = G phi, with G = inv(D_beam) D (D = condensed constitutive matrix, which
+        # also contains a plastic reduction), so the geometric stiffness of the
+        # element follows from the displacement field of the beam, u_b = T u.
+        beam = constitutive_matrix(self.EA, self.EI, self.l, None, False, False)
+        transfer = np.linalg.solve(beam[1:, 1:], self.constitutive_matrix[1:, 1:])
+        if not np.allclose(transfer, np.eye(2)):
+            # the node rotations enter the relative rotations with the factors -1
+            # (node 1) and 1 (node 2) of the kinematic matrix
+            rotations = np.zeros((6, 2))
+            rotations[2, 0] = -1.0
+            rotations[5, 1] = 1.0
+            beam_displacement = (
+                np.eye(6)
+                + rotations @ (transfer - np.eye(2)) @ self.kinematic_matrix[1:, :]
+            )
+            geometric = beam_displacement.T @ geometric @ beam_displacement
+
+        self.stiffness_matrix += geometric
 
     def reset(self) -> None:
         """Reset the element's solve state"""
@@ -453,24 +489,73 @@ def stiffness_matrix(
     return kinematic_transposed_times_constitutive @ var_kinematic_matrix  # type: ignore
 
 
-def geometric_stiffness_matrix(l: float, N: float, a1: float, a2: float) -> np.ndarray:
+def geometric_stiffness_matrix(
+    l: float,
+    N: float,
+    a1: float,
+    a2: float,
+    angle: Optional[float] = None,
+    truss: bool = False,
+) -> np.ndarray:
     """Generate the geometric stiffness matrix of an element
+
+    The matrix is derived for the displacements in the global directions. The angle at a
+    node differs from the angle of the element (`angle`) when the node has an inclined
+    roller support: the translations of that node are then given in the rotated system of
+    the support. The matrix of the element is transformed to that system, in the same way
+    as the kinematic matrix (the rotation of the node, with the angle of the element
+    replaced by the angle at the node, is R(a_node - angle)).
 
     Args:
         l (float): Length
         N (float): Axial force
         a1 (float): Angle of the element at node 1
         a2 (float): Angle of the element at node 2
+        angle (Optional[float], optional): Angle of the element itself. Defaults to None, the
+            angle at node 1.
+        truss (bool, optional): A truss element has no bending stiffness: the matrix of a
+            string, N / l times the transverse translations, without the rotation terms of a
+            beam. Defaults to False.
 
     Returns:
         np.ndarray: Geometric stiffness matrix of the element
     """
-    c1 = cos(a1)
-    s1 = sin(a1)
-    c2 = cos(a2)
-    s2 = sin(a2)
+    if angle is None:
+        angle = a1
+    matrix = _geometric_stiffness_matrix(l, N, angle)
+    if truss:
+        # the transverse part of the beam matrix is 6/5 * N / l (a cubic displacement field);
+        # a string has N / l, and the node rotations are not a degree of freedom
+        matrix = matrix * (5 / 6)
+        matrix[[2, 5], :] = 0.0
+        matrix[:, [2, 5]] = 0.0
+    if a1 != angle or a2 != angle:
+        transform = np.eye(6)
+        for node, node_angle in ((0, a1), (3, a2)):
+            delta = node_angle - angle
+            transform[node : node + 2, node : node + 2] = [
+                [cos(delta), -sin(delta)],
+                [sin(delta), cos(delta)],
+            ]
+        matrix = transform.T @ matrix @ transform
+    return matrix
+
+
+def _geometric_stiffness_matrix(l: float, N: float, angle: float) -> np.ndarray:
+    """Geometric stiffness matrix of an element for the displacements in the global directions
+
+    Args:
+        l (float): Length
+        N (float): Axial force
+        angle (float): Angle of the element
+
+    Returns:
+        np.ndarray: Geometric stiffness matrix of the element
+    """
+    c1 = c2 = cos(angle)
+    s1 = s2 = sin(angle)
     # http://people.duke.edu/~hpgavin/cee421/frame-finite-def.pdf
-    return (  # type: ignore
+    return (
         N
         / l
         * np.array(
@@ -504,7 +589,7 @@ def geometric_stiffness_matrix(l: float, N: float, a1: float, a2: float) -> np.n
                     6 / 5 * s1 * c1,
                     l / 10 * s1,
                     6 / 5 * s2**2,
-                    -6 / 5 * s1 * c2,
+                    -6 / 5 * s2 * c2,
                     l / 10 * s2,
                 ],
                 [
@@ -525,5 +610,7 @@ def geometric_stiffness_matrix(l: float, N: float, a1: float, a2: float) -> np.n
                 ],
             ]
         )
-        * np.array([1, -1, 1, 1, -1, 1])
-    )  # conversion from coordinate system
+        # conversion from coordinate system: the y-axis points the other way, K -> S K S
+        # (the rows and the columns, so that the matrix stays symmetric)
+        * np.outer([1, -1, 1, 1, -1, 1], [1, -1, 1, 1, -1, 1])
+    )
